@@ -19,14 +19,27 @@ async function auditLog(admin_id, action, before, after, ip) {
 
 // MERCADOS
 router.post('/markets', auth, adminOnly, async (req, res) => {
-  const { question, category, yes_odds, no_odds, expires_at } = req.body;
+  const { question, category, yes_odds, no_odds, expires_at, type, options, image_url } = req.body;
   try {
+    const marketType = type === 'multiple' ? 'multiple' : 'single';
     const result = await pool.query(
-      'INSERT INTO markets (question, category, yes_odds, no_odds, expires_at, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-      [question, category || null, yes_odds || 50, no_odds || 50, expires_at || null, 'open']
+      'INSERT INTO markets (question, category, yes_odds, no_odds, expires_at, status, type, image_url) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+      [question, category || null, yes_odds || 50, no_odds || 50, expires_at || null, 'open', marketType, image_url || null]
     );
-    await auditLog(req.user.id, 'CREATE_MARKET', {}, result.rows[0], req.ip);
-    res.status(201).json(result.rows[0]);
+    const market = result.rows[0];
+    if (marketType === 'multiple' && Array.isArray(options) && options.length >= 2) {
+      for (let i = 0; i < options.length; i++) {
+        const o = options[i];
+        await pool.query(
+          'INSERT INTO market_options (market_id, title, yes_odds, no_odds, yes_percent, no_percent, order_index) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+          [market.id, o.title, o.yes_odds || 50, o.no_odds || 50, o.yes_percent || 50, o.no_percent || 50, i]
+        );
+      }
+      const opts = await pool.query('SELECT * FROM market_options WHERE market_id=$1 ORDER BY order_index', [market.id]);
+      market.options = opts.rows;
+    }
+    await auditLog(req.user.id, 'CREATE_MARKET', {}, market, req.ip);
+    res.status(201).json(market);
   } catch (err) {
     console.error('CREATE MARKET ERROR:', err.message);
     res.status(500).json({ error: 'Erro interno' });
@@ -43,15 +56,26 @@ router.get('/markets', auth, adminOnly, async (req, res) => {
 });
 
 router.put('/markets/:id', auth, adminOnly, async (req, res) => {
-  const { question, category, yes_odds, no_odds, expires_at, status } = req.body;
+  const { question, category, yes_odds, no_odds, expires_at, status, type, options, image_url } = req.body;
   try {
     const before = await pool.query('SELECT * FROM markets WHERE id = $1', [req.params.id]);
     const result = await pool.query(
-      'UPDATE markets SET question=COALESCE($1,question), category=COALESCE($2,category), yes_odds=COALESCE($3,yes_odds), no_odds=COALESCE($4,no_odds), expires_at=COALESCE($5,expires_at), status=COALESCE($6,status) WHERE id=$7 RETURNING *',
-      [question, category, yes_odds, no_odds, expires_at, status, req.params.id]
+      'UPDATE markets SET question=COALESCE($1,question), category=COALESCE($2,category), yes_odds=COALESCE($3,yes_odds), no_odds=COALESCE($4,no_odds), expires_at=COALESCE($5,expires_at), status=COALESCE($6,status), image_url=COALESCE($8,image_url) WHERE id=$7 RETURNING *',
+      [question, category, yes_odds, no_odds, expires_at, status, req.params.id, image_url]
     );
-    await auditLog(req.user.id, 'EDIT_MARKET', before.rows[0], result.rows[0], req.ip);
-    res.json(result.rows[0]);
+    const market = result.rows[0];
+    if (Array.isArray(options) && options.length >= 2) {
+      await pool.query('DELETE FROM market_options WHERE market_id=$1', [req.params.id]);
+      for (let i = 0; i < options.length; i++) {
+        const o = options[i];
+        await pool.query(
+          'INSERT INTO market_options (market_id, title, yes_odds, no_odds, yes_percent, no_percent, order_index) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+          [req.params.id, o.title, o.yes_odds || 50, o.no_odds || 50, o.yes_percent || 50, o.no_percent || 50, i]
+        );
+      }
+    }
+    await auditLog(req.user.id, 'EDIT_MARKET', before.rows[0], market, req.ip);
+    res.json(market);
   } catch (err) {
     res.status(500).json({ error: 'Erro interno' });
   }
@@ -451,6 +475,26 @@ router.put('/withdrawals/:id/paid', auth, adminOnly, async (req, res) => {
     await auditLog(req.user.id, 'MARK_PAID_WITHDRAWAL', {}, { id: req.params.id, status: 'paid' }, req.ip);
     res.json({ success: true });
   } catch (err) {
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+// GET /api/admin/referrals
+router.get('/referrals', auth, adminOnly, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT u.id, u.name, u.email, u.referral_code,
+        COUNT(r.id) as total_referred,
+        COALESCE(SUM(rc.amount), 0) as total_earned
+      FROM users u
+      LEFT JOIN users r ON r.referred_by = u.referral_code
+      LEFT JOIN referral_commissions rc ON rc.referrer_id = u.id
+      WHERE u.referral_code IS NOT NULL
+      GROUP BY u.id, u.name, u.email, u.referral_code
+      ORDER BY total_referred DESC
+    `);
+    res.json(result.rows);
+  } catch(err) {
     res.status(500).json({ error: 'Erro interno' });
   }
 });
