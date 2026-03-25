@@ -23,6 +23,24 @@ fs.mkdirSync("/app/uploads/markets", { recursive: true });
 // Servir uploads publicamente
 app.use("/uploads", express.static("/app/uploads"));
 
+
+// Rota pública de settings (sem auth)
+app.get('/api/settings/public', async (req, res) => {
+  const pool = require('./src/config/database');
+  const PUBLIC_KEYS = ['min_deposit', 'saque_minimo', 'saque_maximo'];
+  try {
+    const result = await pool.query(
+      'SELECT key, value FROM settings WHERE key = ANY($1)',
+      [PUBLIC_KEYS]
+    );
+    const data = {};
+    result.rows.forEach(r => data[r.key] = r.value);
+    res.json(data);
+  } catch (err) {
+    res.json({ min_deposit: '10.00' }); // fallback
+  }
+});
+
 const authRoutes = require("./src/routes/auth");
 const marketRoutes = require("./src/routes/markets");
 const betRoutes = require("./src/routes/bets");

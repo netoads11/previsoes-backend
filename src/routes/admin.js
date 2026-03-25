@@ -226,7 +226,6 @@ router.get('/audit', auth, adminOnly, async (req, res) => {
   }
 });
 
-module.exports = router;
 
 // DEPOSITOS
 router.get('/deposits', auth, adminOnly, async (req, res) => {
@@ -484,3 +483,23 @@ router.put('/withdrawals/:id/paid', auth, adminOnly, async (req, res) => {
     res.status(500).json({ error: 'Erro interno' });
   }
 });
+
+// PATCH settings (alias público do PUT)
+router.patch('/settings', auth, adminOnly, async (req, res) => {
+  const settings = req.body;
+  try {
+    for (const [key, value] of Object.entries(settings)) {
+      await pool.query(
+        'INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value=$2',
+        [key, String(value)]
+      );
+    }
+    await auditLog(req.user.id, 'EDIT_SETTINGS', {}, settings, req.ip);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+
+module.exports = router;
