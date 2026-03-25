@@ -2,6 +2,22 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const auth = require('../middleware/auth');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const dir = '/app/uploads/markets';
+    fs.mkdirSync(dir, { recursive: true });
+    cb(null, dir);
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase() || '.jpg';
+    cb(null, `${req.params.id}_${Date.now()}${ext}`);
+  }
+});
+const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } });
 
 function adminOnly(req, res, next) {
   if (!req.user.is_admin) return res.status(403).json({ error: 'Acesso negado' });
@@ -19,11 +35,11 @@ async function auditLog(admin_id, action, before, after, ip) {
 
 // MERCADOS
 router.post('/markets', auth, adminOnly, async (req, res) => {
-  const { question, category, yes_odds, no_odds, expires_at } = req.body;
+  const { question, category, yes_odds, no_odds, expires_at, image_url } = req.body;
   try {
     const result = await pool.query(
-      'INSERT INTO markets (question, category, yes_odds, no_odds, expires_at, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-      [question, category || null, yes_odds || 50, no_odds || 50, expires_at || null, 'open']
+      'INSERT INTO markets (question, category, yes_odds, no_odds, expires_at, status, image_url) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+      [question, category || null, yes_odds || 50, no_odds || 50, expires_at || null, 'open', image_url || null]
     );
     await auditLog(req.user.id, 'CREATE_MARKET', {}, result.rows[0], req.ip);
     res.status(201).json(result.rows[0]);
@@ -43,12 +59,12 @@ router.get('/markets', auth, adminOnly, async (req, res) => {
 });
 
 router.put('/markets/:id', auth, adminOnly, async (req, res) => {
-  const { question, category, yes_odds, no_odds, expires_at, status } = req.body;
+  const { question, category, yes_odds, no_odds, expires_at, status, image_url } = req.body;
   try {
     const before = await pool.query('SELECT * FROM markets WHERE id = $1', [req.params.id]);
     const result = await pool.query(
-      'UPDATE markets SET question=COALESCE($1,question), category=COALESCE($2,category), yes_odds=COALESCE($3,yes_odds), no_odds=COALESCE($4,no_odds), expires_at=COALESCE($5,expires_at), status=COALESCE($6,status) WHERE id=$7 RETURNING *',
-      [question, category, yes_odds, no_odds, expires_at, status, req.params.id]
+      'UPDATE markets SET question=COALESCE($1,question), category=COALESCE($2,category), yes_odds=COALESCE($3,yes_odds), no_odds=COALESCE($4,no_odds), expires_at=COALESCE($5,expires_at), status=COALESCE($6,status), image_url=COALESCE($7,image_url) WHERE id=$8 RETURNING *',
+      [question, category, yes_odds, no_odds, expires_at, status, image_url || null, req.params.id]
     );
     await auditLog(req.user.id, 'EDIT_MARKET', before.rows[0], result.rows[0], req.ip);
     res.json(result.rows[0]);
@@ -64,6 +80,20 @@ router.put('/markets/:id/resolve', auth, adminOnly, async (req, res) => {
     await pool.query('UPDATE markets SET status=$1, result=$2 WHERE id=$3', ['resolved', result, req.params.id]);
     await auditLog(req.user.id, 'RESOLVE_MARKET', before.rows[0], { result, status: 'resolved' }, req.ip);
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+
+// UPLOAD DE IMAGEM DO MERCADO
+router.post('/markets/:id/image', auth, adminOnly, upload.single('image'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado' });
+  try {
+    const imageUrl = `/uploads/markets/${req.file.filename}`;
+    await pool.query('UPDATE markets SET image_url=$1 WHERE id=$2', [imageUrl, req.params.id]);
+    await auditLog(req.user.id, 'UPLOAD_IMAGE', {}, { id: req.params.id, image_url: imageUrl }, req.ip);
+    res.json({ success: true, image_url: imageUrl });
   } catch (err) {
     res.status(500).json({ error: 'Erro interno' });
   }

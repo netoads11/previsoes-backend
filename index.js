@@ -2,6 +2,8 @@ const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
 const dotenv = require("dotenv");
+const path = require("path");
+const fs = require("fs");
 
 dotenv.config();
 
@@ -14,6 +16,12 @@ app.use(express.json());
 app.get("/", (req, res) => {
   res.json({ status: "ok", message: "Previsoes API rodando!" });
 });
+
+// Garantir pasta de uploads
+fs.mkdirSync("/app/uploads/markets", { recursive: true });
+
+// Servir uploads publicamente
+app.use("/uploads", express.static("/app/uploads"));
 
 const authRoutes = require("./src/routes/auth");
 const marketRoutes = require("./src/routes/markets");
