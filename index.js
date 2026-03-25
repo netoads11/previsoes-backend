@@ -10,21 +10,26 @@ dotenv.config();
 const app = express();
 
 app.use(helmet());
-app.use(cors());
+app.use(cors({
+  origin: '*',
+  methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type','Authorization']
+}));
 app.use(express.json());
 
 app.get("/", (req, res) => {
   res.json({ status: "ok", message: "Previsoes API rodando!" });
 });
 
-// Garantir pasta de uploads
-fs.mkdirSync("/app/uploads/markets", { recursive: true });
+// Garantir pastas de uploads
+['markets','branding','banners'].forEach(d => {
+  fs.mkdirSync(`/app/uploads/${d}`, { recursive: true });
+});
 
 // Servir uploads publicamente
 app.use("/uploads", express.static("/app/uploads"));
 
-
-// Rota pública de settings (sem auth)
+// Rota publica de settings
 app.get('/api/settings/public', async (req, res) => {
   const pool = require('./src/config/database');
   const PUBLIC_KEYS = ['min_deposit', 'saque_minimo', 'saque_maximo'];
@@ -37,7 +42,7 @@ app.get('/api/settings/public', async (req, res) => {
     result.rows.forEach(r => data[r.key] = r.value);
     res.json(data);
   } catch (err) {
-    res.json({ min_deposit: '10.00' }); // fallback
+    res.json({ min_deposit: '10.00' });
   }
 });
 

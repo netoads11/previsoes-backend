@@ -6,18 +6,26 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const dir = '/app/uploads/markets';
-    fs.mkdirSync(dir, { recursive: true });
-    cb(null, dir);
-  },
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase() || '.jpg';
-    cb(null, `${req.params.id}_${Date.now()}${ext}`);
-  }
-});
-const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } });
+// ─ Storage factories ─
+function makeStorage(dir) {
+  return multer.diskStorage({
+    destination: (req, file, cb) => {
+      fs.mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase() || '.jpg';
+      cb(null, `${Date.now()}${ext}`);
+    }
+  });
+}
+const uploadMarket = multer({ storage: multer.diskStorage({
+  destination: (req, file, cb) => { fs.mkdirSync('/app/uploads/markets', { recursive: true }); cb(null, '/app/uploads/markets'); },
+  filename: (req, file, cb) => { const ext = path.extname(file.originalname).toLowerCase() || '.jpg'; cb(null, `${req.params.id}_${Date.now()}${ext}`); }
+}), limits: { fileSize: 5 * 1024 * 1024 } });
+
+const uploadBranding = multer({ storage: makeStorage('/app/uploads/branding'), limits: { fileSize: 5 * 1024 * 1024 } });
+const uploadBanner = multer({ storage: makeStorage('/app/uploads/banners'), limits: { fileSize: 5 * 1024 * 1024 } });
 
 function adminOnly(req, res, next) {
   if (!req.user.is_admin) return res.status(403).json({ error: 'Acesso negado' });
@@ -33,7 +41,7 @@ async function auditLog(admin_id, action, before, after, ip) {
   } catch(e) {}
 }
 
-// ═══ MERCADOS ═══
+// ══════ MERCADOS ══════
 router.get('/markets', auth, adminOnly, async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM markets ORDER BY created_at DESC');
@@ -95,7 +103,7 @@ router.put('/markets/:id', auth, adminOnly, async (req, res) => {
   }
 });
 
-router.post('/markets/:id/image', auth, adminOnly, upload.single('image'), async (req, res) => {
+router.post('/markets/:id/image', auth, adminOnly, uploadMarket.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado' });
   try {
     const imageUrl = `/uploads/markets/${req.file.filename}`;
@@ -129,11 +137,11 @@ router.put('/markets/:id/cancel', auth, adminOnly, async (req, res) => {
   }
 });
 
-// ═══ USUÁRIOS ═══
+// ══════ USUÁRIOS ══════
 router.get('/users', auth, adminOnly, async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT u.id, u.name, u.email, u.is_admin, u.status, u.created_at, COALESCE(w.balance, 0) AS balance FROM users u LEFT JOIN wallets w ON w.user_id = u.id ORDER BY u.created_at DESC'
+      'SELECT u.id, u.name, u.email, u.is_admin, u.is_affiliate, u.status, u.referral_code, u.created_at, COALESCE(w.balance, 0) AS balance FROM users u LEFT JOIN wallets w ON w.user_id = u.id ORDER BY u.created_at DESC'
     );
     res.json(result.rows);
   } catch (err) {
@@ -143,7 +151,7 @@ router.get('/users', auth, adminOnly, async (req, res) => {
 
 router.get('/users/:id', auth, adminOnly, async (req, res) => {
   try {
-    const user = await pool.query('SELECT id, name, email, is_admin, status, created_at FROM users WHERE id=$1', [req.params.id]);
+    const user = await pool.query('SELECT id, name, email, is_admin, is_affiliate, status, referral_code, created_at FROM users WHERE id=$1', [req.params.id]);
     const wallet = await pool.query('SELECT balance FROM wallets WHERE user_id=$1', [req.params.id]);
     const bets = await pool.query('SELECT * FROM bets WHERE user_id=$1 ORDER BY created_at DESC LIMIT 20', [req.params.id]);
     const transactions = await pool.query('SELECT * FROM transactions WHERE user_id=$1 ORDER BY created_at DESC LIMIT 20', [req.params.id]);
@@ -163,12 +171,12 @@ router.get('/users/:id/balance', auth, adminOnly, async (req, res) => {
 });
 
 router.put('/users/:id', auth, adminOnly, async (req, res) => {
-  const { name, email, status } = req.body;
+  const { name, email, status, is_affiliate } = req.body;
   try {
     const before = await pool.query('SELECT * FROM users WHERE id=$1', [req.params.id]);
     const result = await pool.query(
-      'UPDATE users SET name=COALESCE($1,name), email=COALESCE($2,email), status=COALESCE($3,status) WHERE id=$4 RETURNING id,name,email,status',
-      [name, email, status, req.params.id]
+      'UPDATE users SET name=COALESCE($1,name), email=COALESCE($2,email), status=COALESCE($3,status), is_affiliate=COALESCE($4,is_affiliate) WHERE id=$5 RETURNING id,name,email,status,is_affiliate',
+      [name, email, status, is_affiliate !== undefined ? is_affiliate : null, req.params.id]
     );
     await auditLog(req.user.id, 'EDIT_USER', before.rows[0], result.rows[0], req.ip);
     res.json(result.rows[0]);
@@ -197,14 +205,20 @@ router.post('/users/:id/balance', auth, adminOnly, async (req, res) => {
   }
 });
 
-// ═══ APOSTAS ═══
+// ══════ APOSTAS ══════
 router.get('/bets', auth, adminOnly, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT b.id, b.amount, b.choice, b.odds, b.status, b.created_at,
+      `SELECT b.id, b.amount, b.choice, b.status, b.created_at,
               u.name AS user_name, u.email AS user_email,
               m.question AS market_question, m.status AS market_status,
-              mo.title AS option_title
+              mo.title AS option_title,
+              CASE
+                WHEN b.option_id IS NOT NULL THEN
+                  CASE WHEN b.choice='yes' THEN mo.yes_odds ELSE mo.no_odds END
+                ELSE
+                  CASE WHEN b.choice='yes' THEN m.yes_odds ELSE m.no_odds END
+              END AS odds
        FROM bets b
        JOIN users u ON b.user_id = u.id
        JOIN markets m ON b.market_id = m.id
@@ -214,11 +228,34 @@ router.get('/bets', auth, adminOnly, async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
+    console.error('BETS ERROR:', err.message);
     res.status(500).json({ error: 'Erro interno' });
   }
 });
 
-// ═══ TRANSAÇÕES ═══
+// ══════ AFILIADOS ══════
+router.get('/referrals', auth, adminOnly, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT u.id, u.name, u.email, u.referral_code,
+              COUNT(DISTINCT referred.id) AS total_referred,
+              COALESCE(SUM(rc.amount), 0) AS total_earned
+       FROM users u
+       LEFT JOIN users referred ON referred.referred_by = u.referral_code
+       LEFT JOIN referral_commissions rc ON rc.referrer_id = u.id
+       WHERE u.referral_code IS NOT NULL
+       GROUP BY u.id, u.name, u.email, u.referral_code
+       ORDER BY total_referred DESC
+       LIMIT 100`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('REFERRALS ERROR:', err.message);
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+// ══════ TRANSAÇÕES ══════
 router.get('/transactions', auth, adminOnly, async (req, res) => {
   try {
     const result = await pool.query(
@@ -230,12 +267,11 @@ router.get('/transactions', auth, adminOnly, async (req, res) => {
   }
 });
 
-// ═══ DEPÓSITOS ═══
+// ══════ DEPÓSITOS ══════
 router.get('/deposits', auth, adminOnly, async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT t.*, u.name, u.email FROM transactions t JOIN users u ON t.user_id = u.id WHERE t.type=$1 ORDER BY t.created_at DESC LIMIT 100',
-      ['deposit']
+      "SELECT t.*, u.name, u.email FROM transactions t JOIN users u ON t.user_id = u.id WHERE t.type='deposit' ORDER BY t.created_at DESC LIMIT 100"
     );
     res.json(result.rows);
   } catch (err) {
@@ -251,8 +287,8 @@ router.post('/deposits/manual', auth, adminOnly, async (req, res) => {
       [user_id, amount]
     );
     const result = await pool.query(
-      'INSERT INTO transactions (user_id, type, amount, status, description) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-      [user_id, 'deposit', amount, 'completed', note || 'Deposito manual admin']
+      "INSERT INTO transactions (user_id, type, amount, status, description) VALUES ($1, 'deposit', $2, 'completed', $3) RETURNING *",
+      [user_id, amount, note || 'Deposito manual admin']
     );
     await auditLog(req.user.id, 'MANUAL_DEPOSIT', {}, { user_id, amount, note }, req.ip);
     res.json(result.rows[0]);
@@ -265,7 +301,7 @@ router.put('/deposits/:id/approve', auth, adminOnly, async (req, res) => {
   try {
     const tx = await pool.query('SELECT * FROM transactions WHERE id=$1', [req.params.id]);
     if (!tx.rows[0]) return res.status(404).json({ error: 'Transacao nao encontrada' });
-    await pool.query('UPDATE transactions SET status=$1 WHERE id=$2', ['completed', req.params.id]);
+    await pool.query("UPDATE transactions SET status='completed' WHERE id=$1", [req.params.id]);
     await pool.query(
       'INSERT INTO wallets (user_id, balance) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET balance = wallets.balance + $2',
       [tx.rows[0].user_id, tx.rows[0].amount]
@@ -281,7 +317,7 @@ router.put('/deposits/:id/refund', auth, adminOnly, async (req, res) => {
   try {
     const tx = await pool.query('SELECT * FROM transactions WHERE id=$1', [req.params.id]);
     if (!tx.rows[0]) return res.status(404).json({ error: 'Transacao nao encontrada' });
-    await pool.query('UPDATE transactions SET status=$1 WHERE id=$2', ['refunded', req.params.id]);
+    await pool.query("UPDATE transactions SET status='refunded' WHERE id=$1", [req.params.id]);
     await pool.query('UPDATE wallets SET balance = balance - $1 WHERE user_id=$2', [tx.rows[0].amount, tx.rows[0].user_id]);
     await auditLog(req.user.id, 'REFUND_DEPOSIT', tx.rows[0], { status: 'refunded' }, req.ip);
     res.json({ success: true });
@@ -290,12 +326,11 @@ router.put('/deposits/:id/refund', auth, adminOnly, async (req, res) => {
   }
 });
 
-// ═══ SAQUES ═══
+// ══════ SAQUES ══════
 router.get('/withdrawals', auth, adminOnly, async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT t.*, u.name, u.email FROM transactions t JOIN users u ON t.user_id = u.id WHERE t.type=$1 ORDER BY t.created_at DESC LIMIT 100',
-      ['withdrawal']
+      "SELECT t.*, u.name, u.email FROM transactions t JOIN users u ON t.user_id = u.id WHERE t.type='withdrawal' ORDER BY t.created_at DESC LIMIT 100"
     );
     res.json(result.rows);
   } catch (err) {
@@ -308,8 +343,8 @@ router.post('/withdrawals/manual', auth, adminOnly, async (req, res) => {
   try {
     await pool.query('UPDATE wallets SET balance = balance - $1 WHERE user_id=$2', [amount, user_id]);
     const result = await pool.query(
-      'INSERT INTO transactions (user_id, type, amount, status, description) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-      [user_id, 'withdrawal', amount, 'completed', note || 'Saque manual admin']
+      "INSERT INTO transactions (user_id, type, amount, status, description) VALUES ($1, 'withdrawal', $2, 'completed', $3) RETURNING *",
+      [user_id, amount, note || 'Saque manual admin']
     );
     await auditLog(req.user.id, 'MANUAL_WITHDRAWAL', {}, { user_id, amount, note }, req.ip);
     res.json(result.rows[0]);
@@ -322,7 +357,7 @@ router.put('/withdrawals/:id/approve', auth, adminOnly, async (req, res) => {
   try {
     const tx = await pool.query('SELECT * FROM transactions WHERE id=$1', [req.params.id]);
     if (!tx.rows[0]) return res.status(404).json({ error: 'Transacao nao encontrada' });
-    await pool.query('UPDATE transactions SET status=$1 WHERE id=$2', ['completed', req.params.id]);
+    await pool.query("UPDATE transactions SET status='completed' WHERE id=$1", [req.params.id]);
     await auditLog(req.user.id, 'APPROVE_WITHDRAWAL', tx.rows[0], { status: 'completed' }, req.ip);
     res.json({ success: true });
   } catch (err) {
@@ -335,7 +370,7 @@ router.put('/withdrawals/:id/reject', auth, adminOnly, async (req, res) => {
   try {
     const tx = await pool.query('SELECT * FROM transactions WHERE id=$1', [req.params.id]);
     if (!tx.rows[0]) return res.status(404).json({ error: 'Transacao nao encontrada' });
-    await pool.query('UPDATE transactions SET status=$1 WHERE id=$2', ['rejected', req.params.id]);
+    await pool.query("UPDATE transactions SET status='rejected' WHERE id=$1", [req.params.id]);
     await pool.query('UPDATE wallets SET balance = balance + $1 WHERE user_id=$2', [tx.rows[0].amount, tx.rows[0].user_id]);
     await auditLog(req.user.id, 'REJECT_WITHDRAWAL', tx.rows[0], { status: 'rejected', reason }, req.ip);
     res.json({ success: true });
@@ -346,7 +381,7 @@ router.put('/withdrawals/:id/reject', auth, adminOnly, async (req, res) => {
 
 router.put('/withdrawals/:id/paid', auth, adminOnly, async (req, res) => {
   try {
-    await pool.query('UPDATE transactions SET status=$1 WHERE id=$2', ['paid', req.params.id]);
+    await pool.query("UPDATE transactions SET status='paid' WHERE id=$1", [req.params.id]);
     await auditLog(req.user.id, 'MARK_PAID_WITHDRAWAL', {}, { id: req.params.id, status: 'paid' }, req.ip);
     res.json({ success: true });
   } catch (err) {
@@ -354,7 +389,7 @@ router.put('/withdrawals/:id/paid', auth, adminOnly, async (req, res) => {
   }
 });
 
-// ═══ CONFIGURAÇÕES ═══
+// ══════ CONFIGURAÇÕES ══════
 router.get('/settings', auth, adminOnly, async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM settings');
@@ -398,27 +433,90 @@ router.patch('/settings', auth, adminOnly, async (req, res) => {
   }
 });
 
-// ═══ AUDITORIA ═══
-router.get('/audit', auth, adminOnly, async (req, res) => {
+// Upload logo
+router.post('/settings/logo', auth, adminOnly, uploadBranding.single('image'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado' });
   try {
-    const result = await pool.query(
-      'SELECT a.*, u.name, u.email FROM audit_logs a JOIN users u ON a.admin_id = u.id ORDER BY a.created_at DESC LIMIT 100'
-    );
-    res.json(result.rows);
+    const url = `/uploads/branding/${req.file.filename}`;
+    await pool.query("INSERT INTO settings (key,value) VALUES ('logo_url',$1) ON CONFLICT (key) DO UPDATE SET value=$1", [url]);
+    res.json({ success: true, url });
+  } catch (err) {
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+// Upload favicon
+router.post('/settings/favicon', auth, adminOnly, uploadBranding.single('image'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado' });
+  try {
+    const url = `/uploads/branding/${req.file.filename}`;
+    await pool.query("INSERT INTO settings (key,value) VALUES ('favicon_url',$1) ON CONFLICT (key) DO UPDATE SET value=$1", [url]);
+    res.json({ success: true, url });
+  } catch (err) {
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+// ══════ BANNERS ══════
+router.get('/banners', auth, adminOnly, async (req, res) => {
+  try {
+    const r = await pool.query("SELECT value FROM settings WHERE key='banners_list'");
+    const banners = r.rows[0] ? JSON.parse(r.rows[0].value) : [];
+    res.json(banners);
   } catch (err) {
     res.json([]);
   }
 });
 
-// ═══ REFERRALS ═══
-router.get('/referrals', auth, adminOnly, async (req, res) => {
+router.post('/banners', auth, adminOnly, uploadBanner.single('image'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado' });
+  try {
+    const url = `/uploads/banners/${req.file.filename}`;
+    const r = await pool.query("SELECT value FROM settings WHERE key='banners_list'");
+    const banners = r.rows[0] ? JSON.parse(r.rows[0].value) : [];
+    const newBanner = { id: Date.now(), name: req.body.name || req.file.originalname, url, active: true, created_at: new Date().toISOString() };
+    banners.push(newBanner);
+    await pool.query("INSERT INTO settings (key,value) VALUES ('banners_list',$1) ON CONFLICT (key) DO UPDATE SET value=$1", [JSON.stringify(banners)]);
+    res.json({ success: true, banner: newBanner });
+  } catch (err) {
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+router.patch('/banners/:id', auth, adminOnly, async (req, res) => {
+  try {
+    const r = await pool.query("SELECT value FROM settings WHERE key='banners_list'");
+    let banners = r.rows[0] ? JSON.parse(r.rows[0].value) : [];
+    banners = banners.map(b => String(b.id) === String(req.params.id) ? { ...b, ...req.body } : b);
+    await pool.query("INSERT INTO settings (key,value) VALUES ('banners_list',$1) ON CONFLICT (key) DO UPDATE SET value=$1", [JSON.stringify(banners)]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+router.delete('/banners/:id', auth, adminOnly, async (req, res) => {
+  try {
+    const r = await pool.query("SELECT value FROM settings WHERE key='banners_list'");
+    let banners = r.rows[0] ? JSON.parse(r.rows[0].value) : [];
+    const target = banners.find(b => String(b.id) === String(req.params.id));
+    if (target) {
+      const filePath = `/app${target.url}`;
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    }
+    banners = banners.filter(b => String(b.id) !== String(req.params.id));
+    await pool.query("INSERT INTO settings (key,value) VALUES ('banners_list',$1) ON CONFLICT (key) DO UPDATE SET value=$1", [JSON.stringify(banners)]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+// ══════ AUDITORIA ══════
+router.get('/audit', auth, adminOnly, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT r.*, u.name AS referrer_name, u.email AS referrer_email, u2.name AS referred_name
-       FROM referrals r
-       JOIN users u ON r.referrer_id = u.id
-       LEFT JOIN users u2 ON r.referred_id = u2.id
-       ORDER BY r.created_at DESC LIMIT 100`
+      'SELECT a.*, u.name, u.email FROM audit_logs a JOIN users u ON a.admin_id = u.id ORDER BY a.created_at DESC LIMIT 100'
     );
     res.json(result.rows);
   } catch (err) {
