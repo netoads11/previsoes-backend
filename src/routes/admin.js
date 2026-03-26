@@ -237,20 +237,82 @@ router.get('/bets', auth, adminOnly, async (req, res) => {
 router.get('/referrals', auth, adminOnly, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT u.id, u.name, u.email, u.referral_code,
+      `SELECT u.id, u.name, u.email, u.referral_code, u.status,
               COUNT(DISTINCT referred.id) AS total_referred,
               COALESCE(SUM(rc.amount), 0) AS total_earned
        FROM users u
        LEFT JOIN users referred ON referred.referred_by = u.referral_code
        LEFT JOIN referral_commissions rc ON rc.referrer_id = u.id
        WHERE u.referral_code IS NOT NULL
-       GROUP BY u.id, u.name, u.email, u.referral_code
+       GROUP BY u.id, u.name, u.email, u.referral_code, u.status
        ORDER BY total_referred DESC
        LIMIT 100`
     );
-    res.json(result.rows);
+    // Enriquecer com taxas de comissão personalizadas
+    const ratesRow = await pool.query("SELECT value FROM settings WHERE key='affiliate_commissions'");
+    const rates = ratesRow.rows[0] ? JSON.parse(ratesRow.rows[0].value) : {};
+    const rows = result.rows.map(r => ({ ...r, commission_rate: rates[r.id] || 0 }));
+    res.json(rows);
   } catch (err) {
     console.error('REFERRALS ERROR:', err.message);
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+// PATCH afiliado: status + taxa de comissão personalizada
+router.patch('/referrals/:user_id', auth, adminOnly, async (req, res) => {
+  const { status, commission_rate } = req.body;
+  try {
+    const before = await pool.query('SELECT id, name, email, status FROM users WHERE id=$1', [req.params.user_id]);
+    if (!before.rows[0]) return res.status(404).json({ error: 'Usuário não encontrado' });
+
+    // Atualiza status do usuário
+    if (status !== undefined) {
+      await pool.query('UPDATE users SET status=$1 WHERE id=$2', [status, req.params.user_id]);
+    }
+
+    // Armazena taxa personalizada em settings (JSON map)
+    if (commission_rate !== undefined) {
+      const r = await pool.query("SELECT value FROM settings WHERE key='affiliate_commissions'");
+      const rates = r.rows[0] ? JSON.parse(r.rows[0].value) : {};
+      rates[req.params.user_id] = Number(commission_rate);
+      await pool.query(
+        "INSERT INTO settings (key,value) VALUES ('affiliate_commissions',$1) ON CONFLICT (key) DO UPDATE SET value=$1",
+        [JSON.stringify(rates)]
+      );
+    }
+
+    await auditLog(req.user.id, 'EDIT_AFFILIATE', before.rows[0], { status, commission_rate }, req.ip);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('PATCH REFERRAL ERROR:', err.message);
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+// PUT /users/:id/balance — define saldo absoluto (admin set)
+router.put('/users/:id/balance', auth, adminOnly, async (req, res) => {
+  const { balance } = req.body;
+  if (balance === undefined || isNaN(Number(balance))) {
+    return res.status(400).json({ error: 'Saldo inválido' });
+  }
+  try {
+    const before = await pool.query('SELECT balance FROM wallets WHERE user_id=$1', [req.params.id]);
+    const oldBalance = Number(before.rows[0]?.balance || 0);
+    const newBalance = Number(balance);
+    // Upsert: define saldo diretamente
+    await pool.query(
+      'INSERT INTO wallets (user_id, balance) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET balance = $2',
+      [req.params.id, newBalance]
+    );
+    await pool.query(
+      "INSERT INTO transactions (user_id, type, amount, status, description) VALUES ($1, 'admin_set', $2, 'completed', $3)",
+      [req.params.id, Math.abs(newBalance - oldBalance), `Saldo definido manualmente: R$ ${oldBalance.toFixed(2)} → R$ ${newBalance.toFixed(2)}`]
+    );
+    await auditLog(req.user.id, 'SET_BALANCE', { balance: oldBalance }, { balance: newBalance }, req.ip);
+    res.json({ success: true, new_balance: newBalance });
+  } catch (err) {
+    console.error('SET BALANCE ERROR:', err.message);
     res.status(500).json({ error: 'Erro interno' });
   }
 });
