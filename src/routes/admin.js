@@ -519,6 +519,15 @@ router.post('/settings/favicon', auth, adminOnly, uploadBranding.single('image')
   }
 });
 
+// ══════ TESTE GATEWAY ══════
+router.post('/settings/test-gateway', auth, adminOnly, async (req, res) => {
+  try {
+    const simplify = require('../services/simplify.service');
+    const result = await simplify.testConnection();
+    res.json(result);
+  } catch(e) { res.json({ success: false, message: e.message }); }
+});
+
 // ══════ BANNERS ══════
 router.get('/banners', auth, adminOnly, async (req, res) => {
   try {
