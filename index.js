@@ -34,6 +34,18 @@ app.use('/uploads', (req, res, next) => {
   next();
 }, express.static('/app/uploads'));
 
+// Rota pública de banners (sem auth)
+app.get('/api/admin/banners/public', async (req, res) => {
+  const pool = require('./src/config/database');
+  try {
+    const r = await pool.query("SELECT value FROM settings WHERE key='banners_list'");
+    const banners = r.rows[0] ? JSON.parse(r.rows[0].value) : [];
+    res.json(banners.filter((b) => b.active));
+  } catch (err) {
+    res.json([]);
+  }
+});
+
 // Rota pública de settings
 app.get('/api/settings/public', async (req, res) => {
   const pool = require('./src/config/database');
