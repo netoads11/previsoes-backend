@@ -3,7 +3,7 @@ const router = express.Router();
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const pool = require("../config/database");
-const logger = require("../config/logger");
+const logger = { info: console.log, warn: console.warn, error: console.error };
 
 router.post("/register", async (req, res) => {
   const { name, email, password, ref } = req.body;
