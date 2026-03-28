@@ -377,11 +377,47 @@ router.put('/deposits/:id/approve', auth, adminOnly, async (req, res) => {
   try {
     const tx = await pool.query('SELECT * FROM transactions WHERE id=$1', [req.params.id]);
     if (!tx.rows[0]) return res.status(404).json({ error: 'Transacao nao encontrada' });
+    if (tx.rows[0].status === 'completed') return res.status(400).json({ error: 'Deposito ja aprovado' });
+
     await pool.query("UPDATE transactions SET status='completed' WHERE id=$1", [req.params.id]);
     await pool.query(
       'INSERT INTO wallets (user_id, balance) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET balance = wallets.balance + $2',
       [tx.rows[0].user_id, tx.rows[0].amount]
     );
+
+    // Comissão de afiliado
+    try {
+      const depositor = await pool.query('SELECT referred_by FROM users WHERE id=$1', [tx.rows[0].user_id]);
+      const referred_by = depositor.rows[0]?.referred_by;
+      if (referred_by) {
+        const referrer = await pool.query('SELECT id FROM users WHERE referral_code=$1', [referred_by]);
+        if (referrer.rows[0]) {
+          const referrerId = referrer.rows[0].id;
+          const ratesRow = await pool.query("SELECT value FROM settings WHERE key='affiliate_commissions'");
+          const rates = ratesRow.rows[0] ? JSON.parse(ratesRow.rows[0].value) : {};
+          const rate = Number(rates[referrerId] || 0);
+          if (rate > 0) {
+            const commission = Number((tx.rows[0].amount * rate / 100).toFixed(2));
+            await pool.query(
+              'INSERT INTO wallets (user_id, balance) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET balance = wallets.balance + $2',
+              [referrerId, commission]
+            );
+            await pool.query(
+              'INSERT INTO referral_commissions (referrer_id, referred_id, transaction_id, amount) VALUES ($1, $2, $3, $4)',
+              [referrerId, tx.rows[0].user_id, tx.rows[0].id, commission]
+            );
+            await pool.query(
+              "INSERT INTO transactions (user_id, type, amount, status, description) VALUES ($1, 'commission', $2, 'completed', $3)",
+              [referrerId, commission, `Comissão ${rate}% sobre depósito de R$${tx.rows[0].amount}`]
+            );
+            logger.info('Comissão de afiliado creditada', { referrerId, commission, rate, depositId: req.params.id });
+          }
+        }
+      }
+    } catch (commErr) {
+      logger.error('Erro ao processar comissão de afiliado', { depositId: req.params.id, error: commErr.message });
+    }
+
     await auditLog(req.user.id, 'APPROVE_DEPOSIT', tx.rows[0], { status: 'completed' }, req.ip);
     res.json({ success: true });
   } catch (err) {

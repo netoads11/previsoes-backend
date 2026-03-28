@@ -80,6 +80,25 @@ app.get('/api/settings/public', async (req, res) => {
   }
 });
 
+// Auto-criação de tabelas auxiliares
+(async () => {
+  const pool = require('./src/config/database');
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS referral_commissions (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        referrer_id UUID NOT NULL,
+        referred_id UUID NOT NULL,
+        transaction_id UUID NOT NULL,
+        amount DECIMAL(10,2) NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+  } catch(e) {
+    logger.error('Erro ao criar tabela referral_commissions', { error: e.message });
+  }
+})();
+
 const authRoutes = require("./src/routes/auth");
 const marketRoutes = require("./src/routes/markets");
 const betRoutes = require("./src/routes/bets");
