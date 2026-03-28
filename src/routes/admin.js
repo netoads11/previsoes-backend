@@ -164,12 +164,31 @@ router.get('/users/:id', auth, adminOnly, async (req, res) => {
 
 router.get('/users/:id/details', auth, adminOnly, async (req, res) => {
   try {
-    const user = await pool.query('SELECT id, name, email, is_admin, is_affiliate, status, referral_code, created_at FROM users WHERE id=$1', [req.params.id]);
+    const user = await pool.query('SELECT id, name, email, phone, role, is_admin, is_affiliate, status, referral_code, referred_by, created_at FROM users WHERE id=$1', [req.params.id]);
     if (!user.rows[0]) return res.status(404).json({ error: 'Usuário não encontrado' });
-    const wallet = await pool.query('SELECT balance FROM wallets WHERE user_id=$1', [req.params.id]);
+    const wallet = await pool.query('SELECT balance, balance_rollover, balance_bonus, balance_blocked, balance_affiliate, balance_demo FROM wallets WHERE user_id=$1', [req.params.id]);
+    const affSettings = await pool.query('SELECT cpa, rev_share, baseline FROM affiliate_settings WHERE user_id=$1', [req.params.id]);
+    const ratesRow = await pool.query("SELECT value FROM settings WHERE key='affiliate_commissions'");
+    const rates = ratesRow.rows[0] ? JSON.parse(ratesRow.rows[0].value) : {};
     const bets = await pool.query('SELECT b.*, m.question FROM bets b LEFT JOIN markets m ON b.market_id=m.id WHERE b.user_id=$1 ORDER BY b.created_at DESC LIMIT 50', [req.params.id]);
     const transactions = await pool.query('SELECT * FROM transactions WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50', [req.params.id]);
-    res.json({ ...user.rows[0], balance: wallet.rows[0]?.balance || 0, bets: bets.rows, transactions: transactions.rows });
+    const w = wallet.rows[0] || {};
+    const aff = affSettings.rows[0] || {};
+    res.json({
+      ...user.rows[0],
+      balance: w.balance || 0,
+      balance_rollover: w.balance_rollover || 0,
+      balance_bonus: w.balance_bonus || 0,
+      balance_blocked: w.balance_blocked || 0,
+      balance_affiliate: w.balance_affiliate || 0,
+      balance_demo: w.balance_demo || 0,
+      cpa: aff.cpa || 0,
+      rev_share: aff.rev_share || 0,
+      baseline: aff.baseline || 0,
+      commission_rate: rates[req.params.id] || 0,
+      bets: bets.rows,
+      transactions: transactions.rows,
+    });
   } catch (err) {
     res.status(500).json({ error: 'Erro interno' });
   }
@@ -185,16 +204,65 @@ router.get('/users/:id/balance', auth, adminOnly, async (req, res) => {
 });
 
 router.put('/users/:id', auth, adminOnly, async (req, res) => {
-  const { name, email, status, is_affiliate } = req.body;
+  const { name, email, status, is_affiliate, phone, role, password,
+          balance, balance_rollover, balance_bonus, balance_blocked, balance_affiliate, balance_demo,
+          cpa, rev_share, baseline, commission_rate } = req.body;
   try {
     const before = await pool.query('SELECT * FROM users WHERE id=$1', [req.params.id]);
-    const result = await pool.query(
-      'UPDATE users SET name=COALESCE($1,name), email=COALESCE($2,email), status=COALESCE($3,status), is_affiliate=COALESCE($4,is_affiliate) WHERE id=$5 RETURNING id,name,email,status,is_affiliate',
-      [name, email, status, is_affiliate !== undefined ? is_affiliate : null, req.params.id]
-    );
+
+    // Atualiza usuário
+    let userParams = [name||null, email||null, status||null, is_affiliate !== undefined ? is_affiliate : null, phone||null, role||null];
+    let userQuery = 'UPDATE users SET name=COALESCE($1,name), email=COALESCE($2,email), status=COALESCE($3,status), is_affiliate=COALESCE($4,is_affiliate), phone=COALESCE($5,phone), role=COALESCE($6,role)';
+    if (password && password.trim()) {
+      const bcrypt = require('bcryptjs');
+      const hash = await bcrypt.hash(password.trim(), 10);
+      userParams.push(hash);
+      userQuery += `, password=$${userParams.length}`;
+    }
+    userParams.push(req.params.id);
+    userQuery += ` WHERE id=$${userParams.length} RETURNING id,name,email,phone,role,status,is_affiliate,referral_code`;
+    const result = await pool.query(userQuery, userParams);
+
+    // Atualiza wallet
+    const walletFields = { balance, balance_rollover, balance_bonus, balance_blocked, balance_affiliate, balance_demo };
+    const walletEntries = Object.entries(walletFields).filter(([, v]) => v !== undefined && v !== '');
+    if (walletEntries.length > 0) {
+      const cols = walletEntries.map(([k]) => k).join(', ');
+      const placeholders = walletEntries.map((_, i) => `$${i+2}`).join(', ');
+      const setClause = walletEntries.map(([k], i) => `${k}=$${i+2}`).join(', ');
+      await pool.query(
+        `INSERT INTO wallets (user_id, ${cols}) VALUES ($1, ${placeholders}) ON CONFLICT (user_id) DO UPDATE SET ${setClause}`,
+        [req.params.id, ...walletEntries.map(([, v]) => Number(v))]
+      );
+    }
+
+    // Atualiza affiliate_settings
+    if (cpa !== undefined || rev_share !== undefined || baseline !== undefined) {
+      await pool.query(
+        `INSERT INTO affiliate_settings (user_id, cpa, rev_share, baseline) VALUES ($1,$2,$3,$4)
+         ON CONFLICT (user_id) DO UPDATE SET
+           cpa=COALESCE($2, affiliate_settings.cpa),
+           rev_share=COALESCE($3, affiliate_settings.rev_share),
+           baseline=COALESCE($4, affiliate_settings.baseline)`,
+        [req.params.id, cpa !== undefined ? Number(cpa) : null, rev_share !== undefined ? Number(rev_share) : null, baseline !== undefined ? Number(baseline) : null]
+      );
+    }
+
+    // Atualiza taxa de comissão
+    if (commission_rate !== undefined) {
+      const r = await pool.query("SELECT value FROM settings WHERE key='affiliate_commissions'");
+      const rates = r.rows[0] ? JSON.parse(r.rows[0].value) : {};
+      rates[req.params.id] = Number(commission_rate);
+      await pool.query(
+        "INSERT INTO settings (key,value) VALUES ('affiliate_commissions',$1) ON CONFLICT (key) DO UPDATE SET value=$1",
+        [JSON.stringify(rates)]
+      );
+    }
+
     await auditLog(req.user.id, 'EDIT_USER', before.rows[0], result.rows[0], req.ip);
     res.json(result.rows[0]);
   } catch (err) {
+    logger.error('Erro ao editar usuário', { id: req.params.id, error: err.message });
     res.status(500).json({ error: 'Erro interno' });
   }
 });
