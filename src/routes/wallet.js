@@ -69,4 +69,35 @@ router.post("/withdraw", auth, async (req, res) => {
   }
 });
 
+router.get("/affiliate-balance", auth, async (req, res) => {
+  try {
+    const result = await pool.query("SELECT COALESCE(balance_affiliate,0) AS balance_affiliate FROM wallets WHERE user_id = $1", [req.user.id]);
+    res.json({ balance_affiliate: Number(result.rows[0]?.balance_affiliate || 0) });
+  } catch (err) {
+    res.status(500).json({ error: "Erro interno" });
+  }
+});
+
+router.post("/affiliate-withdraw", auth, async (req, res) => {
+  const { amount, pix_key } = req.body;
+  if (!amount || Number(amount) <= 0) return res.status(400).json({ error: "Valor inválido" });
+  if (!pix_key) return res.status(400).json({ error: "Chave PIX obrigatória" });
+  const amt = Number(amount);
+  try {
+    const wallet = await pool.query("SELECT COALESCE(balance_affiliate,0) AS balance_affiliate FROM wallets WHERE user_id = $1", [req.user.id]);
+    const available = Number(wallet.rows[0]?.balance_affiliate || 0);
+    if (available < amt) return res.status(400).json({ error: "Saldo de afiliado insuficiente" });
+    await pool.query("UPDATE wallets SET balance_affiliate = balance_affiliate - $1 WHERE user_id = $2", [amt, req.user.id]);
+    const result = await pool.query(
+      "INSERT INTO affiliate_withdrawal_requests (user_id, amount, pix_key) VALUES ($1, $2, $3) RETURNING *",
+      [req.user.id, amt, pix_key]
+    );
+    logger.info('Saque afiliado solicitado', { userId: req.user.id, amount: amt });
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    logger.error('Erro ao solicitar saque afiliado', { userId: req.user.id, error: err.message });
+    res.status(500).json({ error: "Erro interno" });
+  }
+});
+
 module.exports = router;

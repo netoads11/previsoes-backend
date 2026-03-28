@@ -372,6 +372,71 @@ router.patch('/referrals/:user_id', auth, adminOnly, async (req, res) => {
   }
 });
 
+// ══════ SAQUES DE AFILIADOS ══════
+router.get('/affiliate-withdrawals', auth, adminOnly, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT aw.*, u.name, u.email
+       FROM affiliate_withdrawal_requests aw
+       JOIN users u ON aw.user_id = u.id
+       ORDER BY aw.created_at DESC
+       LIMIT 200`
+    );
+    const pending = result.rows.filter(r => r.status === 'pending');
+    const paid = result.rows.filter(r => r.status === 'paid');
+    const stats = {
+      total_pending: pending.reduce((s, r) => s + Number(r.amount), 0),
+      count_pending: pending.length,
+      total_paid_all: paid.reduce((s, r) => s + Number(r.amount), 0),
+      count_paid: paid.length,
+    };
+    res.json({ rows: result.rows, stats });
+  } catch (err) {
+    logger.error('Erro ao listar saques afiliados', { error: err.message });
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+router.put('/affiliate-withdrawals/:id/approve', auth, adminOnly, async (req, res) => {
+  try {
+    const aw = await pool.query('SELECT * FROM affiliate_withdrawal_requests WHERE id=$1', [req.params.id]);
+    if (!aw.rows[0]) return res.status(404).json({ error: 'Solicitação não encontrada' });
+    if (aw.rows[0].status !== 'pending') return res.status(400).json({ error: 'Solicitação já processada' });
+    await pool.query(
+      "UPDATE affiliate_withdrawal_requests SET status='paid', updated_at=NOW() WHERE id=$1",
+      [req.params.id]
+    );
+    await auditLog(req.user.id, 'APPROVE_AFFILIATE_WITHDRAWAL', aw.rows[0], { status: 'paid' }, req.ip);
+    res.json({ success: true });
+  } catch (err) {
+    logger.error('Erro ao aprovar saque afiliado', { error: err.message });
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+router.put('/affiliate-withdrawals/:id/reject', auth, adminOnly, async (req, res) => {
+  const { reason } = req.body;
+  try {
+    const aw = await pool.query('SELECT * FROM affiliate_withdrawal_requests WHERE id=$1', [req.params.id]);
+    if (!aw.rows[0]) return res.status(404).json({ error: 'Solicitação não encontrada' });
+    if (aw.rows[0].status !== 'pending') return res.status(400).json({ error: 'Solicitação já processada' });
+    await pool.query(
+      "UPDATE affiliate_withdrawal_requests SET status='rejected', reject_reason=$1, updated_at=NOW() WHERE id=$2",
+      [reason || null, req.params.id]
+    );
+    // Estorna balance_affiliate
+    await pool.query(
+      'UPDATE wallets SET balance_affiliate = COALESCE(balance_affiliate, 0) + $1 WHERE user_id=$2',
+      [aw.rows[0].amount, aw.rows[0].user_id]
+    );
+    await auditLog(req.user.id, 'REJECT_AFFILIATE_WITHDRAWAL', aw.rows[0], { status: 'rejected', reason }, req.ip);
+    res.json({ success: true });
+  } catch (err) {
+    logger.error('Erro ao rejeitar saque afiliado', { error: err.message });
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
 // PUT /users/:id/balance — define saldo absoluto (admin set)
 router.put('/users/:id/balance', auth, adminOnly, async (req, res) => {
   const { balance } = req.body;
@@ -467,7 +532,7 @@ router.put('/deposits/:id/approve', auth, adminOnly, async (req, res) => {
           if (rate > 0) {
             const commission = Number((tx.rows[0].amount * rate / 100).toFixed(2));
             await pool.query(
-              'INSERT INTO wallets (user_id, balance) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET balance = wallets.balance + $2',
+              'INSERT INTO wallets (user_id, balance_affiliate) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET balance_affiliate = COALESCE(wallets.balance_affiliate, 0) + $2',
               [referrerId, commission]
             );
             await pool.query(

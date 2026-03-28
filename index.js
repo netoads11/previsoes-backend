@@ -94,8 +94,20 @@ app.get('/api/settings/public', async (req, res) => {
         created_at TIMESTAMP DEFAULT NOW()
       )
     `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS affiliate_withdrawal_requests (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID NOT NULL,
+        amount DECIMAL(10,2) NOT NULL,
+        pix_key VARCHAR(255) NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'pending',
+        reject_reason TEXT,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
   } catch(e) {
-    logger.error('Erro ao criar tabela referral_commissions', { error: e.message });
+    logger.error('Erro ao criar tabelas auxiliares', { error: e.message });
   }
 })();
 
@@ -113,17 +125,21 @@ app.get('/api/user/referrals', require('./src/middleware/auth'), async (req, res
       'SELECT referral_code, referred_by FROM users WHERE id=$1', [req.user.id]
     );
     const user = u.rows[0];
-    const stats = await pool.query(
-      `SELECT COUNT(DISTINCT r.id) AS total_referred, COALESCE(SUM(rc.amount),0) AS total_earned
-       FROM users r
-       LEFT JOIN referral_commissions rc ON rc.referrer_id=$1
-       WHERE r.referred_by=$2`, [req.user.id, user?.referral_code]
-    );
+    const [stats, wallet] = await Promise.all([
+      pool.query(
+        `SELECT COUNT(DISTINCT r.id) AS total_referred, COALESCE(SUM(rc.amount),0) AS total_earned
+         FROM users r
+         LEFT JOIN referral_commissions rc ON rc.referrer_id=$1
+         WHERE r.referred_by=$2`, [req.user.id, user?.referral_code]
+      ),
+      pool.query('SELECT COALESCE(balance_affiliate,0) AS balance_affiliate FROM wallets WHERE user_id=$1', [req.user.id]),
+    ]);
     res.json({
       referral_code: user?.referral_code || null,
       referred_by: user?.referred_by || null,
       total_referred: Number(stats.rows[0]?.total_referred || 0),
       total_earned: Number(stats.rows[0]?.total_earned || 0),
+      balance_affiliate: Number(wallet.rows[0]?.balance_affiliate || 0),
     });
   } catch(e) { res.status(500).json({ error: 'Erro interno' }); }
 });
