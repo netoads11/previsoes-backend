@@ -67,7 +67,7 @@ router.post("/login", async (req, res) => {
     const user = result.rows[0];
     const token = jwt.sign({ id: user.id, email: user.email, is_admin: user.is_admin }, process.env.JWT_SECRET, { expiresIn: "7d" });
     logger.info('Login bem-sucedido', { userId: user.id, email: user.email, isAdmin: user.is_admin });
-    res.json({ user: { id: user.id, name: user.name, email: user.email, is_admin: user.is_admin }, token });
+    res.json({ user: { id: user.id, name: user.name, email: user.email, is_admin: user.is_admin, referral_code: user.referral_code }, token });
   } catch (err) {
     logger.error('Erro no login', { email, error: err.message, stack: err.stack });
     res.status(500).json({ error: "Erro interno" });

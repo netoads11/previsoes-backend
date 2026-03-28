@@ -86,6 +86,29 @@ const betRoutes = require("./src/routes/bets");
 const walletRoutes = require("./src/routes/wallet");
 const adminRoutes = require("./src/routes/admin");
 
+// GET /api/user/referrals — dados de afiliado do usuário logado
+app.get('/api/user/referrals', require('./src/middleware/auth'), async (req, res) => {
+  const pool = require('./src/config/database');
+  try {
+    const u = await pool.query(
+      'SELECT referral_code, referred_by FROM users WHERE id=$1', [req.user.id]
+    );
+    const user = u.rows[0];
+    const stats = await pool.query(
+      `SELECT COUNT(DISTINCT r.id) AS total_referred, COALESCE(SUM(rc.amount),0) AS total_earned
+       FROM users r
+       LEFT JOIN referral_commissions rc ON rc.referrer_id=$1
+       WHERE r.referred_by=$2`, [req.user.id, user?.referral_code]
+    );
+    res.json({
+      referral_code: user?.referral_code || null,
+      referred_by: user?.referred_by || null,
+      total_referred: Number(stats.rows[0]?.total_referred || 0),
+      total_earned: Number(stats.rows[0]?.total_earned || 0),
+    });
+  } catch(e) { res.status(500).json({ error: 'Erro interno' }); }
+});
+
 app.use("/api/auth", authRoutes);
 app.use("/api/markets", marketRoutes);
 app.use("/api/bets", betRoutes);
