@@ -121,10 +121,23 @@ const adminRoutes = require("./src/routes/admin");
 app.get('/api/user/referrals', require('./src/middleware/auth'), async (req, res) => {
   const pool = require('./src/config/database');
   try {
-    const u = await pool.query(
+    let u = await pool.query(
       'SELECT referral_code, referred_by FROM users WHERE id=$1', [req.user.id]
     );
-    const user = u.rows[0];
+    let user = u.rows[0];
+    // Gerar código se o usuário ainda não tiver um (usuários antigos)
+    if (user && !user.referral_code) {
+      let code = null;
+      for (let i = 0; i < 5; i++) {
+        const candidate = Math.random().toString(36).substring(2, 10).toUpperCase();
+        const exists = await pool.query('SELECT id FROM users WHERE referral_code=$1', [candidate]);
+        if (!exists.rows.length) { code = candidate; break; }
+      }
+      if (code) {
+        await pool.query('UPDATE users SET referral_code=$1 WHERE id=$2', [code, req.user.id]);
+        user = { ...user, referral_code: code };
+      }
+    }
     const [stats, wallet] = await Promise.all([
       pool.query(
         `SELECT COUNT(DISTINCT r.id) AS total_referred, COALESCE(SUM(rc.amount),0) AS total_earned
