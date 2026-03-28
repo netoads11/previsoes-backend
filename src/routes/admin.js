@@ -5,6 +5,7 @@ const auth = require('../middleware/auth');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const logger = require('../config/logger');
 
 // ─ Storage factories ─
 function makeStorage(dir) {
@@ -72,7 +73,7 @@ router.post('/markets', auth, adminOnly, async (req, res) => {
     await auditLog(req.user.id, 'CREATE_MARKET', {}, market, req.ip);
     res.status(201).json(market);
   } catch (err) {
-    console.error('CREATE MARKET ERROR:', err.message);
+    logger.error('Erro ao criar mercado', { adminId: req.user.id, error: err.message, stack: err.stack });
     res.status(500).json({ error: 'Erro interno' });
   }
 });
@@ -161,6 +162,19 @@ router.get('/users/:id', auth, adminOnly, async (req, res) => {
   }
 });
 
+router.get('/users/:id/details', auth, adminOnly, async (req, res) => {
+  try {
+    const user = await pool.query('SELECT id, name, email, is_admin, is_affiliate, status, referral_code, created_at FROM users WHERE id=$1', [req.params.id]);
+    if (!user.rows[0]) return res.status(404).json({ error: 'Usuário não encontrado' });
+    const wallet = await pool.query('SELECT balance FROM wallets WHERE user_id=$1', [req.params.id]);
+    const bets = await pool.query('SELECT b.*, m.question FROM bets b LEFT JOIN markets m ON b.market_id=m.id WHERE b.user_id=$1 ORDER BY b.created_at DESC LIMIT 50', [req.params.id]);
+    const transactions = await pool.query('SELECT * FROM transactions WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50', [req.params.id]);
+    res.json({ ...user.rows[0], balance: wallet.rows[0]?.balance || 0, bets: bets.rows, transactions: transactions.rows });
+  } catch (err) {
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
 router.get('/users/:id/balance', auth, adminOnly, async (req, res) => {
   try {
     const result = await pool.query('SELECT COALESCE(balance, 0) AS balance FROM wallets WHERE user_id=$1', [req.params.id]);
@@ -228,7 +242,7 @@ router.get('/bets', auth, adminOnly, async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
-    console.error('BETS ERROR:', err.message);
+    logger.error('Erro ao listar apostas (admin)', { error: err.message, stack: err.stack });
     res.status(500).json({ error: 'Erro interno' });
   }
 });
@@ -254,7 +268,7 @@ router.get('/referrals', auth, adminOnly, async (req, res) => {
     const rows = result.rows.map(r => ({ ...r, commission_rate: rates[r.id] || 0 }));
     res.json(rows);
   } catch (err) {
-    console.error('REFERRALS ERROR:', err.message);
+    logger.error('Erro ao listar referrals', { error: err.message, stack: err.stack });
     res.status(500).json({ error: 'Erro interno' });
   }
 });
@@ -285,7 +299,7 @@ router.patch('/referrals/:user_id', auth, adminOnly, async (req, res) => {
     await auditLog(req.user.id, 'EDIT_AFFILIATE', before.rows[0], { status, commission_rate }, req.ip);
     res.json({ success: true });
   } catch (err) {
-    console.error('PATCH REFERRAL ERROR:', err.message);
+    logger.error('Erro ao atualizar referral', { error: err.message, stack: err.stack });
     res.status(500).json({ error: 'Erro interno' });
   }
 });
@@ -312,7 +326,7 @@ router.put('/users/:id/balance', auth, adminOnly, async (req, res) => {
     await auditLog(req.user.id, 'SET_BALANCE', { balance: oldBalance }, { balance: newBalance }, req.ip);
     res.json({ success: true, new_balance: newBalance });
   } catch (err) {
-    console.error('SET BALANCE ERROR:', err.message);
+    logger.error('Erro ao ajustar saldo (admin)', { error: err.message, stack: err.stack });
     res.status(500).json({ error: 'Erro interno' });
   }
 });

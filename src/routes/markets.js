@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
+const logger = require('../config/logger');
 
 router.get('/', async (req, res) => {
   try {
@@ -28,7 +29,7 @@ router.get('/', async (req, res) => {
     }));
     res.json(enriched);
   } catch (err) {
-    console.error('GET /markets error:', err.message);
+    logger.error('Erro ao listar mercados', { error: err.message, stack: err.stack });
     res.status(500).json({ error: 'Erro interno' });
   }
 });
@@ -36,7 +37,10 @@ router.get('/', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const m = await pool.query('SELECT * FROM markets WHERE id=$1', [req.params.id]);
-    if (!m.rows[0]) return res.status(404).json({ error: 'Mercado nao encontrado' });
+    if (!m.rows[0]) {
+      logger.warn('Mercado não encontrado', { marketId: req.params.id });
+      return res.status(404).json({ error: 'Mercado nao encontrado' });
+    }
     const market = m.rows[0];
     if (market.type === 'multiple') {
       const opts = await pool.query(
@@ -50,6 +54,7 @@ router.get('/:id', async (req, res) => {
     res.json(market);
   } catch (err) {
     if (err.code === '22P02') return res.status(400).json({ error: 'ID invalido' });
+    logger.error('Erro ao buscar mercado', { marketId: req.params.id, error: err.message });
     res.status(500).json({ error: 'Erro interno' });
   }
 });

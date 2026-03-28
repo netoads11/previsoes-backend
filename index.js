@@ -4,10 +4,25 @@ const helmet = require("helmet");
 const dotenv = require("dotenv");
 const path = require("path");
 const fs = require("fs");
+const logger = require("./src/config/logger");
 
 dotenv.config();
 
 const app = express();
+
+// ── Middleware de log HTTP ──
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const ms = Date.now() - start;
+    const level = res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'http';
+    logger[level](`${req.method} ${req.originalUrl} ${res.statusCode} ${ms}ms`, {
+      ip: req.ip,
+      user: req.user?.id || null,
+    });
+  });
+  next();
+});
 
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' }
@@ -42,6 +57,7 @@ app.get('/api/admin/banners/public', async (req, res) => {
     const banners = r.rows[0] ? JSON.parse(r.rows[0].value) : [];
     res.json(banners.filter((b) => b.active));
   } catch (err) {
+    logger.error('GET /api/admin/banners/public falhou', { error: err.message });
     res.json([]);
   }
 });
@@ -59,6 +75,7 @@ app.get('/api/settings/public', async (req, res) => {
     result.rows.forEach(r => data[r.key] = r.value);
     res.json(data);
   } catch (err) {
+    logger.error('GET /api/settings/public falhou', { error: err.message });
     res.json({ min_deposit: '10.00' });
   }
 });
@@ -75,9 +92,21 @@ app.use("/api/bets", betRoutes);
 app.use("/api/wallet", walletRoutes);
 app.use("/api/admin", adminRoutes);
 
+// ── Handler global de erros não capturados ──
+app.use((err, req, res, next) => {
+  logger.error('Erro não tratado', {
+    error: err.message,
+    stack: err.stack,
+    method: req.method,
+    url: req.originalUrl,
+    user: req.user?.id || null,
+  });
+  res.status(500).json({ error: 'Erro interno' });
+});
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`Servidor rodando na porta ${PORT}`);
+  logger.info(`Servidor rodando na porta ${PORT}`);
 });
 
 module.exports = app;
