@@ -913,8 +913,10 @@ router.get('/managers', auth, adminOnly, async (req, res) => {
   try {
     // Busca todos os gerentes
     const managers = await pool.query(
-      `SELECT u.id, u.name, u.email, u.referral_code, u.status, u.created_at
+      `SELECT u.id, u.name, u.email, u.referral_code, u.status, u.created_at,
+              COALESCE(aff.cpa,0) AS cpa, COALESCE(aff.rev_share,0) AS rev_share, COALESCE(aff.baseline,0) AS baseline
        FROM users u
+       LEFT JOIN affiliate_settings aff ON aff.user_id = u.id
        WHERE u.role = 'manager'
        ORDER BY u.created_at DESC`
     );
