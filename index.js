@@ -65,7 +65,7 @@ app.get('/api/admin/banners/public', async (req, res) => {
 // Rota pública de settings
 app.get('/api/settings/public', async (req, res) => {
   const pool = require('./src/config/database');
-  const PUBLIC_KEYS = ['min_deposit', 'saque_minimo', 'saque_maximo'];
+  const PUBLIC_KEYS = ['min_deposit', 'saque_minimo', 'saque_maximo', 'logo_url', 'platform_name'];
   try {
     const result = await pool.query(
       'SELECT key, value FROM settings WHERE key = ANY($1)',
