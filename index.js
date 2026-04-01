@@ -65,7 +65,7 @@ app.get('/api/admin/banners/public', async (req, res) => {
 // Rota pública de settings
 app.get('/api/settings/public', async (req, res) => {
   const pool = require('./src/config/database');
-  const PUBLIC_KEYS = ['min_deposit', 'saque_minimo', 'saque_maximo', 'logo_url', 'platform_name'];
+  const PUBLIC_KEYS = ['min_deposit', 'saque_minimo', 'saque_maximo', 'logo_url', 'platform_name', 'taxa_deposito', 'taxa_vitoria', 'taxa_saque', 'previsao_minima'];
   try {
     const result = await pool.query(
       'SELECT key, value FROM settings WHERE key = ANY($1)',
@@ -116,6 +116,7 @@ const marketRoutes = require("./src/routes/markets");
 const betRoutes = require("./src/routes/bets");
 const walletRoutes = require("./src/routes/wallet");
 const adminRoutes = require("./src/routes/admin");
+const managerRoutes = require("./src/routes/manager");
 
 // GET /api/user/referrals — dados de afiliado do usuário logado
 app.get('/api/user/referrals', require('./src/middleware/auth'), async (req, res) => {
@@ -162,6 +163,7 @@ app.use("/api/markets", marketRoutes);
 app.use("/api/bets", betRoutes);
 app.use("/api/wallet", walletRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/manager", managerRoutes);
 
 // ── Handler global de erros não capturados ──
 app.use((err, req, res, next) => {
