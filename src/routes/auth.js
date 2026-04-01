@@ -43,10 +43,10 @@ router.post("/register", async (req, res) => {
   } catch (err) {
     if (err.code === '23505') {
       logger.warn('Cadastro rejeitado: email já existe', { email });
-    } else {
-      logger.error('Erro ao cadastrar usuário', { email, error: err.message, stack: err.stack });
+      return res.status(400).json({ error: "Email ja cadastrado" });
     }
-    res.status(400).json({ error: "Email ja cadastrado" });
+    logger.error('Erro ao cadastrar usuário', { email, error: err.message, stack: err.stack });
+    res.status(500).json({ error: "Erro interno ao criar conta. Tente novamente." });
   }
 });
 
