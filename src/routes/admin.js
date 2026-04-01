@@ -973,6 +973,69 @@ router.put('/managers/:manager_id/affiliates/:affiliate_id', auth, adminOnly, as
   }
 });
 
+// ══════ EVENTOS ══════
+router.get('/events', auth, adminOnly, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT e.*, COUNT(m.id) AS total_mercados, COALESCE(SUM(b.amount),0) AS volume_total
+       FROM events e
+       LEFT JOIN markets m ON m.event_id = e.id
+       LEFT JOIN bets b ON b.market_id = m.id AND b.status != 'cancelled'
+       GROUP BY e.id ORDER BY e.created_at DESC`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    logger.error('Erro ao listar eventos', { error: err.message });
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+router.post('/events', auth, adminOnly, async (req, res) => {
+  const { titulo, categoria, subcategoria, descricao, status } = req.body;
+  if (!titulo?.trim()) return res.status(400).json({ error: 'Título obrigatório' });
+  try {
+    const r = await pool.query(
+      'INSERT INTO events (titulo, categoria, subcategoria, descricao, status) VALUES ($1,$2,$3,$4,$5) RETURNING *',
+      [titulo, categoria||null, subcategoria||null, descricao||null, status||'active']
+    );
+    await auditLog(req.user.id, 'CREATE_EVENT', {}, r.rows[0], req.ip);
+    res.status(201).json(r.rows[0]);
+  } catch (err) {
+    logger.error('Erro ao criar evento', { error: err.message });
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+router.put('/events/:id', auth, adminOnly, async (req, res) => {
+  const { titulo, categoria, subcategoria, descricao, status } = req.body;
+  try {
+    const before = await pool.query('SELECT * FROM events WHERE id=$1', [req.params.id]);
+    if (!before.rows[0]) return res.status(404).json({ error: 'Evento não encontrado' });
+    const r = await pool.query(
+      'UPDATE events SET titulo=COALESCE($1,titulo), categoria=COALESCE($2,categoria), subcategoria=COALESCE($3,subcategoria), descricao=COALESCE($4,descricao), status=COALESCE($5,status), updated_at=NOW() WHERE id=$6 RETURNING *',
+      [titulo||null, categoria||null, subcategoria||null, descricao||null, status||null, req.params.id]
+    );
+    await auditLog(req.user.id, 'EDIT_EVENT', before.rows[0], r.rows[0], req.ip);
+    res.json(r.rows[0]);
+  } catch (err) {
+    logger.error('Erro ao editar evento', { error: err.message });
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+router.delete('/events/:id', auth, adminOnly, async (req, res) => {
+  try {
+    const before = await pool.query('SELECT * FROM events WHERE id=$1', [req.params.id]);
+    if (!before.rows[0]) return res.status(404).json({ error: 'Evento não encontrado' });
+    await pool.query('DELETE FROM events WHERE id=$1', [req.params.id]);
+    await auditLog(req.user.id, 'DELETE_EVENT', before.rows[0], {}, req.ip);
+    res.json({ success: true });
+  } catch (err) {
+    logger.error('Erro ao deletar evento', { error: err.message });
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
 // ══════ AUDITORIA ══════
 router.get('/audit', auth, adminOnly, async (req, res) => {
   try {
