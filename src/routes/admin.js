@@ -182,6 +182,18 @@ router.put('/markets/:id/cancel', auth, adminOnly, async (req, res) => {
   }
 });
 
+router.put('/markets/:id/archive', auth, adminOnly, async (req, res) => {
+  try {
+    const before = await pool.query('SELECT * FROM markets WHERE id = $1', [req.params.id]);
+    if (!before.rows[0]) return res.status(404).json({ error: 'Mercado não encontrado' });
+    await pool.query('UPDATE markets SET status=$1 WHERE id=$2', ['archived', req.params.id]);
+    await auditLog(req.user.id, 'ARCHIVE_MARKET', before.rows[0], { id: req.params.id, status: 'archived' }, req.ip);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
 // ══════ USUÁRIOS ══════
 router.get('/users', auth, adminOnly, async (req, res) => {
   try {

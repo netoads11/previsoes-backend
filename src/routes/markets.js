@@ -6,7 +6,7 @@ const logger = require('../config/logger');
 router.get('/', async (req, res) => {
   try {
     const markets = await pool.query(
-      "SELECT * FROM markets WHERE status NOT IN ('resolved','cancelled') ORDER BY created_at DESC"
+      "SELECT * FROM markets WHERE status NOT IN ('resolved','cancelled','archived') ORDER BY created_at DESC"
     );
     const result = markets.rows;
 
