@@ -728,7 +728,7 @@ router.post('/banners', auth, adminOnly, uploadBanner.single('image'), async (re
     const url = `/uploads/banners/${req.file.filename}`;
     const r = await pool.query("SELECT value FROM settings WHERE key='banners_list'");
     const banners = r.rows[0] ? JSON.parse(r.rows[0].value) : [];
-    const newBanner = { id: Date.now(), name: req.body.name || req.file.originalname, url, active: true, created_at: new Date().toISOString() };
+    const newBanner = { id: Date.now(), name: req.body.name || req.file.originalname, url, link: req.body.link || '', active: true, created_at: new Date().toISOString() };
     banners.push(newBanner);
     await pool.query("INSERT INTO settings (key,value) VALUES ('banners_list',$1) ON CONFLICT (key) DO UPDATE SET value=$1", [JSON.stringify(banners)]);
     res.json({ success: true, banner: newBanner });
