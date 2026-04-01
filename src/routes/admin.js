@@ -840,6 +840,40 @@ router.get('/stats', auth, adminOnly, async (req, res) => {
   }
 });
 
+// ══════ CHART DATA ══════
+router.get('/chart', auth, adminOnly, async (req, res) => {
+  try {
+    const days = parseInt(req.query.days) || 7;
+    const result = await pool.query(`
+      SELECT
+        TO_CHAR(d.day, 'DD/MM') AS date,
+        COALESCE(dep.valor, 0) AS depositos,
+        COALESCE(saq.valor, 0) AS saques,
+        COALESCE(dep.valor, 0) - COALESCE(saq.valor, 0) AS lucro
+      FROM generate_series(
+        (CURRENT_DATE - ($1 - 1) * INTERVAL '1 day'),
+        CURRENT_DATE,
+        '1 day'
+      ) AS d(day)
+      LEFT JOIN (
+        SELECT DATE(created_at AT TIME ZONE 'UTC') AS dia, SUM(amount) AS valor
+        FROM transactions WHERE type='deposit' AND status='completed'
+        GROUP BY dia
+      ) dep ON dep.dia = d.day
+      LEFT JOIN (
+        SELECT DATE(created_at AT TIME ZONE 'UTC') AS dia, SUM(amount) AS valor
+        FROM transactions WHERE type='withdrawal' AND status IN ('paid','completed')
+        GROUP BY dia
+      ) saq ON saq.dia = d.day
+      ORDER BY d.day ASC
+    `, [days]);
+    res.json(result.rows);
+  } catch (err) {
+    logger.error('Erro em /chart', { error: err.message });
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
 // ══════ AUDITORIA ══════
 router.get('/audit', auth, adminOnly, async (req, res) => {
   try {
