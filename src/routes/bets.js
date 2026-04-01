@@ -5,7 +5,7 @@ const auth = require('../middleware/auth');
 const logger = require('../config/logger');
 
 router.post('/', auth, async (req, res) => {
-  const { market_id, choice, amount } = req.body;
+  const { market_id, choice, amount, option_id } = req.body;
   const user_id = req.user.id;
   logger.info('Aposta recebida', { userId: user_id, marketId: market_id, choice, amount });
   const client = await pool.connect();
@@ -36,40 +36,44 @@ router.post('/', auth, async (req, res) => {
 
     await client.query('UPDATE wallets SET balance = balance - $1 WHERE user_id = $2', [amount, user_id]);
 
-    // Atualiza pools e calcula odds parimutuel
-    const poolField = choice === 'yes' ? 'yes_pool' : 'no_pool';
-    const updatedMarket = await client.query(
-      `UPDATE markets SET ${poolField} = ${poolField} + $1 WHERE id = $2
-       RETURNING yes_pool, no_pool, house_margin`,
-      [amount, market_id]
-    );
-    const { yes_pool, no_pool, house_margin } = updatedMarket.rows[0];
-    const totalPool = parseFloat(yes_pool) + parseFloat(no_pool);
-    const margin = parseFloat(house_margin);
-
+    const margin = parseFloat(market.rows[0].house_margin) || 0.05;
     let multiplier;
-    if (choice === 'yes') {
-      multiplier = totalPool > 0 && parseFloat(yes_pool) > 0
-        ? (totalPool * (1 - margin)) / parseFloat(yes_pool)
-        : 1;
+
+    if (option_id) {
+      // Mercado múltiplo: multiplicador baseado nas odds da opção específica
+      const opt = await client.query('SELECT * FROM market_options WHERE id = $1', [option_id]);
+      if (!opt.rows[0]) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Opção não encontrada' });
+      }
+      const optOdds = choice === 'yes' ? parseFloat(opt.rows[0].yes_odds) : parseFloat(opt.rows[0].no_odds);
+      multiplier = Math.max((1 - margin) * 100 / optOdds, 1);
     } else {
-      multiplier = totalPool > 0 && parseFloat(no_pool) > 0
-        ? (totalPool * (1 - margin)) / parseFloat(no_pool)
-        : 1;
+      // Mercado simples: odds parimutuel por pool
+      const poolField = choice === 'yes' ? 'yes_pool' : 'no_pool';
+      const updatedMarket = await client.query(
+        `UPDATE markets SET ${poolField} = ${poolField} + $1 WHERE id = $2
+         RETURNING yes_pool, no_pool`,
+        [amount, market_id]
+      );
+      const { yes_pool, no_pool } = updatedMarket.rows[0];
+      const totalPool = parseFloat(yes_pool) + parseFloat(no_pool);
+      const sidePool = choice === 'yes' ? parseFloat(yes_pool) : parseFloat(no_pool);
+      multiplier = Math.max(totalPool > 0 && sidePool > 0 ? (totalPool * (1 - margin)) / sidePool : 1, 1);
+
+      const yes_odds_new = totalPool > 0 ? (parseFloat(yes_pool) / totalPool) * 100 : 50;
+      const no_odds_new  = totalPool > 0 ? (parseFloat(no_pool)  / totalPool) * 100 : 50;
+      await client.query(
+        'UPDATE markets SET yes_odds = $1, no_odds = $2 WHERE id = $3',
+        [yes_odds_new.toFixed(2), no_odds_new.toFixed(2), market_id]
+      );
     }
-    multiplier = Math.max(multiplier, 1);
+
     const potential_payout = parseFloat(amount) * multiplier;
 
-    const yes_odds_new = totalPool > 0 ? (parseFloat(yes_pool) / totalPool) * 100 : 50;
-    const no_odds_new  = totalPool > 0 ? (parseFloat(no_pool)  / totalPool) * 100 : 50;
-    await client.query(
-      'UPDATE markets SET yes_odds = $1, no_odds = $2 WHERE id = $3',
-      [yes_odds_new.toFixed(2), no_odds_new.toFixed(2), market_id]
-    );
-
     const bet = await client.query(
-      'INSERT INTO bets (user_id, market_id, choice, amount, odds, potential_payout) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-      [user_id, market_id, choice, amount, multiplier.toFixed(4), potential_payout.toFixed(2)]
+      'INSERT INTO bets (user_id, market_id, choice, amount, odds, potential_payout, option_id) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+      [user_id, market_id, choice, amount, multiplier.toFixed(4), potential_payout.toFixed(2), option_id || null]
     );
 
     await client.query('COMMIT');

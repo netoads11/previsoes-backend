@@ -117,51 +117,50 @@ router.post('/markets/:id/image', auth, adminOnly, uploadMarket.single('image'),
 });
 
 router.put('/markets/:id/resolve', auth, adminOnly, async (req, res) => {
-  const { result } = req.body;
+  const { result, winning_option_id } = req.body;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const before = await client.query('SELECT * FROM markets WHERE id = $1', [req.params.id]);
-    if (!before.rows[0]) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ error: 'Mercado não encontrado' });
-    }
-    if (before.rows[0].status === 'resolved') {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Mercado já resolvido' });
-    }
+    if (!before.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Mercado não encontrado' }); }
+    if (before.rows[0].status === 'resolved') { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Mercado já resolvido' }); }
 
-    await client.query('UPDATE markets SET status=$1, result=$2 WHERE id=$3', ['resolved', result, req.params.id]);
+    const isMultiple = before.rows[0].type === 'multiple';
+    if (isMultiple && !winning_option_id) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Informe a opção vencedora (winning_option_id)' }); }
 
-    // Paga apostadores vencedores usando o multiplicador travado no momento da aposta
-    const winningBets = await client.query(
-      `SELECT id, user_id, amount, odds FROM bets
-       WHERE market_id = $1 AND choice = $2 AND status = 'open'`,
-      [req.params.id, result]
-    );
+    await client.query('UPDATE markets SET status=$1, result=$2 WHERE id=$3', ['resolved', isMultiple ? winning_option_id : result, req.params.id]);
+
+    let winningBets;
+    if (isMultiple) {
+      // Vencedores: apostaram SIM na opção vencedora
+      winningBets = await client.query(
+        `SELECT id, user_id, amount, odds FROM bets
+         WHERE market_id=$1 AND option_id=$2 AND choice='yes' AND status='open'`,
+        [req.params.id, winning_option_id]
+      );
+    } else {
+      winningBets = await client.query(
+        `SELECT id, user_id, amount, odds FROM bets
+         WHERE market_id=$1 AND choice=$2 AND status='open'`,
+        [req.params.id, result]
+      );
+    }
 
     let totalPaid = 0;
     for (const bet of winningBets.rows) {
       const payout = parseFloat(bet.amount) * parseFloat(bet.odds);
-      await client.query(
-        'UPDATE wallets SET balance = balance + $1 WHERE user_id = $2',
-        [payout.toFixed(2), bet.user_id]
-      );
-      await client.query(
-        "UPDATE bets SET status = 'won' WHERE id = $1",
-        [bet.id]
-      );
+      await client.query('UPDATE wallets SET balance = balance + $1 WHERE user_id = $2', [payout.toFixed(2), bet.user_id]);
+      await client.query("UPDATE bets SET status='won' WHERE id=$1", [bet.id]);
       totalPaid += payout;
     }
 
-    // Marca apostas perdedoras como 'lost'
+    // Todas as outras apostas abertas deste mercado = perderam
     await client.query(
-      `UPDATE bets SET status = 'lost'
-       WHERE market_id = $1 AND choice != $2 AND status = 'open'`,
-      [req.params.id, result]
+      `UPDATE bets SET status='lost' WHERE market_id=$1 AND status='open'`,
+      [req.params.id]
     );
 
-    await auditLog(req.user.id, 'RESOLVE_MARKET', before.rows[0], { result, status: 'resolved', winners: winningBets.rows.length, totalPaid: totalPaid.toFixed(2) }, req.ip);
+    await auditLog(req.user.id, 'RESOLVE_MARKET', before.rows[0], { result: isMultiple ? winning_option_id : result, status: 'resolved', winners: winningBets.rows.length, totalPaid: totalPaid.toFixed(2) }, req.ip);
     await client.query('COMMIT');
     res.json({ success: true, winners: winningBets.rows.length, totalPaid: totalPaid.toFixed(2) });
   } catch (err) {
