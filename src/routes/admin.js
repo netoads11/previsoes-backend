@@ -118,13 +118,57 @@ router.post('/markets/:id/image', auth, adminOnly, uploadMarket.single('image'),
 
 router.put('/markets/:id/resolve', auth, adminOnly, async (req, res) => {
   const { result } = req.body;
+  const client = await pool.connect();
   try {
-    const before = await pool.query('SELECT * FROM markets WHERE id = $1', [req.params.id]);
-    await pool.query('UPDATE markets SET status=$1, result=$2 WHERE id=$3', ['resolved', result, req.params.id]);
-    await auditLog(req.user.id, 'RESOLVE_MARKET', before.rows[0], { result, status: 'resolved' }, req.ip);
-    res.json({ success: true });
+    await client.query('BEGIN');
+    const before = await client.query('SELECT * FROM markets WHERE id = $1', [req.params.id]);
+    if (!before.rows[0]) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Mercado não encontrado' });
+    }
+    if (before.rows[0].status === 'resolved') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Mercado já resolvido' });
+    }
+
+    await client.query('UPDATE markets SET status=$1, result=$2 WHERE id=$3', ['resolved', result, req.params.id]);
+
+    // Paga apostadores vencedores usando o multiplicador travado no momento da aposta
+    const winningBets = await client.query(
+      `SELECT id, user_id, amount, odds FROM bets
+       WHERE market_id = $1 AND choice = $2 AND status = 'open'`,
+      [req.params.id, result]
+    );
+
+    let totalPaid = 0;
+    for (const bet of winningBets.rows) {
+      const payout = parseFloat(bet.amount) * parseFloat(bet.odds);
+      await client.query(
+        'UPDATE wallets SET balance = balance + $1 WHERE user_id = $2',
+        [payout.toFixed(2), bet.user_id]
+      );
+      await client.query(
+        "UPDATE bets SET status = 'won' WHERE id = $1",
+        [bet.id]
+      );
+      totalPaid += payout;
+    }
+
+    // Marca apostas perdedoras como 'lost'
+    await client.query(
+      `UPDATE bets SET status = 'lost'
+       WHERE market_id = $1 AND choice != $2 AND status = 'open'`,
+      [req.params.id, result]
+    );
+
+    await auditLog(req.user.id, 'RESOLVE_MARKET', before.rows[0], { result, status: 'resolved', winners: winningBets.rows.length, totalPaid: totalPaid.toFixed(2) }, req.ip);
+    await client.query('COMMIT');
+    res.json({ success: true, winners: winningBets.rows.length, totalPaid: totalPaid.toFixed(2) });
   } catch (err) {
+    await client.query('ROLLBACK');
     res.status(500).json({ error: 'Erro interno' });
+  } finally {
+    client.release();
   }
 });
 

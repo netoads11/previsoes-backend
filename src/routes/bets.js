@@ -20,11 +20,47 @@ router.post('/', auth, async (req, res) => {
       return res.status(404).json({ error: 'Mercado nao encontrado ou fechado' });
     }
     await pool.query('UPDATE wallets SET balance = balance - $1 WHERE user_id = $2', [amount, user_id]);
-    const bet = await pool.query(
-      'INSERT INTO bets (user_id, market_id, choice, amount) VALUES ($1, $2, $3, $4) RETURNING *',
-      [user_id, market_id, choice, amount]
+
+    // Atualiza pools e calcula odds parimutuel antes de registrar a aposta
+    const poolField = choice === 'yes' ? 'yes_pool' : 'no_pool';
+    const updatedMarket = await pool.query(
+      `UPDATE markets SET ${poolField} = ${poolField} + $1 WHERE id = $2
+       RETURNING yes_pool, no_pool, house_margin`,
+      [amount, market_id]
     );
-    logger.info('Aposta registrada', { betId: bet.rows[0].id, userId: user_id, marketId: market_id, choice, amount });
+    const { yes_pool, no_pool, house_margin } = updatedMarket.rows[0];
+    const totalPool = parseFloat(yes_pool) + parseFloat(no_pool);
+    const margin = parseFloat(house_margin);
+
+    // Multiplicador: quanto o jogador recebe por cada R$1 apostado (ex: 1.85x)
+    // yes_multiplier = total * (1 - margin) / yes_pool
+    let multiplier;
+    if (choice === 'yes') {
+      multiplier = totalPool > 0 && parseFloat(yes_pool) > 0
+        ? (totalPool * (1 - margin)) / parseFloat(yes_pool)
+        : 1;
+    } else {
+      multiplier = totalPool > 0 && parseFloat(no_pool) > 0
+        ? (totalPool * (1 - margin)) / parseFloat(no_pool)
+        : 1;
+    }
+    // Garante mínimo de 1x (não perde mais do que apostou)
+    multiplier = Math.max(multiplier, 1);
+    const potential_payout = parseFloat(amount) * multiplier;
+
+    // Recalcula odds percentuais exibidas no mercado
+    const yes_odds_new = totalPool > 0 ? (parseFloat(yes_pool) / totalPool) * 100 : 50;
+    const no_odds_new  = totalPool > 0 ? (parseFloat(no_pool)  / totalPool) * 100 : 50;
+    await pool.query(
+      'UPDATE markets SET yes_odds = $1, no_odds = $2 WHERE id = $3',
+      [yes_odds_new.toFixed(2), no_odds_new.toFixed(2), market_id]
+    );
+
+    const bet = await pool.query(
+      'INSERT INTO bets (user_id, market_id, choice, amount, odds, potential_payout) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+      [user_id, market_id, choice, amount, multiplier.toFixed(4), potential_payout.toFixed(2)]
+    );
+    logger.info('Aposta registrada', { betId: bet.rows[0].id, userId: user_id, marketId: market_id, choice, amount, multiplier: multiplier.toFixed(4) });
     res.status(201).json(bet.rows[0]);
   } catch (err) {
     logger.error('Erro ao registrar aposta', { userId: user_id, marketId: market_id, error: err.message, stack: err.stack });
