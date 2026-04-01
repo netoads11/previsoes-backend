@@ -42,16 +42,34 @@ router.get('/me', auth, managerOnly, async (req, res) => {
       [m.referral_code]
     );
 
+    // Configurações de comissão do próprio gerente (teto definido pelo admin)
+    const mySettings = await pool.query(
+      'SELECT cpa, rev_share, baseline FROM affiliate_settings WHERE user_id=$1',
+      [req.user.id]
+    );
+    const myCommission = {
+      cpa: Number(mySettings.rows[0]?.cpa || 0),
+      rev_share: Number(mySettings.rows[0]?.rev_share || 0),
+      baseline: Number(mySettings.rows[0]?.baseline || 0),
+    };
+
     const totalCommissions = affiliates.rows.reduce((s, a) => s + Number(a.total_earned || 0), 0);
     const totalReferred = affiliates.rows.reduce((s, a) => s + Number(a.total_referred || 0), 0);
+    // Margem do gerente = soma das diferenças rev_share por afiliado (estimativa)
+    const totalDistributed = affiliates.rows.reduce((s, a) => s + Number(a.rev_share || 0), 0);
+    const avgAffiliate = affiliates.rows.length > 0 ? totalDistributed / affiliates.rows.length : 0;
 
     res.json({
       ...m,
+      my_commission: myCommission,
       affiliates: affiliates.rows,
       stats: {
         total_affiliates: affiliates.rows.length,
         total_commissions: totalCommissions,
         total_referred: totalReferred,
+        my_rev_share: myCommission.rev_share,
+        avg_affiliate_rev_share: Number(avgAffiliate.toFixed(1)),
+        my_margin: Number((myCommission.rev_share - avgAffiliate).toFixed(1)),
       }
     });
   } catch (err) {
@@ -73,6 +91,25 @@ router.put('/affiliates/:affiliate_id', auth, managerOnly, async (req, res) => {
     );
     if (!affiliate.rows[0]) return res.status(404).json({ error: 'Afiliado não vinculado a você' });
 
+    // Validar que afiliado não recebe mais que o teto do gerente
+    const mySettings = await pool.query(
+      'SELECT cpa, rev_share, baseline FROM affiliate_settings WHERE user_id=$1',
+      [req.user.id]
+    );
+    const myCpa = Number(mySettings.rows[0]?.cpa || 0);
+    const myRevShare = Number(mySettings.rows[0]?.rev_share || 0);
+    const myBaseline = Number(mySettings.rows[0]?.baseline || 0);
+
+    if (cpa !== undefined && Number(cpa) > myCpa) {
+      return res.status(400).json({ error: `CPA máximo permitido: R$ ${myCpa.toFixed(2)}` });
+    }
+    if (rev_share !== undefined && Number(rev_share) > myRevShare) {
+      return res.status(400).json({ error: `RevShare máximo permitido: ${myRevShare}%` });
+    }
+    if (baseline !== undefined && myBaseline > 0 && Number(baseline) < myBaseline) {
+      return res.status(400).json({ error: `Baseline mínimo: R$ ${myBaseline.toFixed(2)}` });
+    }
+
     await pool.query(
       `INSERT INTO affiliate_settings (user_id, cpa, rev_share, baseline)
        VALUES ($1, $2, $3, $4)
@@ -82,6 +119,16 @@ router.put('/affiliates/:affiliate_id', auth, managerOnly, async (req, res) => {
          baseline = COALESCE($4, affiliate_settings.baseline)`,
       [req.params.affiliate_id, cpa ?? null, rev_share ?? null, baseline ?? null]
     );
+
+    // Atualiza também o mapa de affiliate_commissions usado no pagamento de depósitos
+    const ratesRow = await pool.query("SELECT value FROM settings WHERE key='affiliate_commissions'");
+    const rates = ratesRow.rows[0] ? JSON.parse(ratesRow.rows[0].value) : {};
+    if (rev_share !== undefined) rates[req.params.affiliate_id] = Number(rev_share);
+    await pool.query(
+      "INSERT INTO settings (key,value) VALUES ('affiliate_commissions',$1) ON CONFLICT (key) DO UPDATE SET value=$1",
+      [JSON.stringify(rates)]
+    );
+
     res.json({ success: true });
   } catch (err) {
     logger.error('Erro ao setar comissão', { error: err.message });

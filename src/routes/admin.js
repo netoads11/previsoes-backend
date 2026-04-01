@@ -518,32 +518,66 @@ router.put('/deposits/:id/approve', auth, adminOnly, async (req, res) => {
       [tx.rows[0].user_id, tx.rows[0].amount]
     );
 
-    // Comissão de afiliado
+    // Comissão de afiliado + gerente
     try {
       const depositor = await pool.query('SELECT referred_by FROM users WHERE id=$1', [tx.rows[0].user_id]);
       const referred_by = depositor.rows[0]?.referred_by;
       if (referred_by) {
-        const referrer = await pool.query('SELECT id FROM users WHERE referral_code=$1', [referred_by]);
+        const referrer = await pool.query('SELECT id, referred_by FROM users WHERE referral_code=$1', [referred_by]);
         if (referrer.rows[0]) {
           const referrerId = referrer.rows[0].id;
           const ratesRow = await pool.query("SELECT value FROM settings WHERE key='affiliate_commissions'");
           const rates = ratesRow.rows[0] ? JSON.parse(ratesRow.rows[0].value) : {};
-          const rate = Number(rates[referrerId] || 0);
-          if (rate > 0) {
-            const commission = Number((tx.rows[0].amount * rate / 100).toFixed(2));
+          const affiliateRate = Number(rates[referrerId] || 0);
+
+          if (affiliateRate > 0) {
+            const affiliateCommission = Number((tx.rows[0].amount * affiliateRate / 100).toFixed(2));
             await pool.query(
               'INSERT INTO wallets (user_id, balance_affiliate) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET balance_affiliate = COALESCE(wallets.balance_affiliate, 0) + $2',
-              [referrerId, commission]
+              [referrerId, affiliateCommission]
             );
             await pool.query(
               'INSERT INTO referral_commissions (referrer_id, referred_id, transaction_id, amount) VALUES ($1, $2, $3, $4)',
-              [referrerId, tx.rows[0].user_id, tx.rows[0].id, commission]
+              [referrerId, tx.rows[0].user_id, tx.rows[0].id, affiliateCommission]
             );
             await pool.query(
               "INSERT INTO transactions (user_id, type, amount, status, description) VALUES ($1, 'commission', $2, 'completed', $3)",
-              [referrerId, commission, `Comissão ${rate}% sobre depósito de R$${tx.rows[0].amount}`]
+              [referrerId, affiliateCommission, `Comissão afiliado ${affiliateRate}% sobre depósito de R$${tx.rows[0].amount}`]
             );
-            logger.info('Comissão de afiliado creditada', { referrerId, commission, rate, depositId: req.params.id });
+            logger.info('Comissão de afiliado creditada', { referrerId, affiliateCommission, affiliateRate, depositId: req.params.id });
+          }
+
+          // Comissão do gerente: se o afiliado foi captado por um gerente, gerente ganha a diferença
+          if (referrer.rows[0].referred_by) {
+            const managerRow = await pool.query(
+              "SELECT u.id FROM users u WHERE u.referral_code=$1 AND u.role='manager'",
+              [referrer.rows[0].referred_by]
+            );
+            if (managerRow.rows[0]) {
+              const managerId = managerRow.rows[0].id;
+              const managerSettings = await pool.query(
+                'SELECT rev_share FROM affiliate_settings WHERE user_id=$1',
+                [managerId]
+              );
+              const managerRate = Number(managerSettings.rows[0]?.rev_share || 0);
+              const managerCut = managerRate - affiliateRate;
+              if (managerCut > 0) {
+                const managerCommission = Number((tx.rows[0].amount * managerCut / 100).toFixed(2));
+                await pool.query(
+                  'INSERT INTO wallets (user_id, balance_affiliate) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET balance_affiliate = COALESCE(wallets.balance_affiliate, 0) + $2',
+                  [managerId, managerCommission]
+                );
+                await pool.query(
+                  'INSERT INTO referral_commissions (referrer_id, referred_id, transaction_id, amount) VALUES ($1, $2, $3, $4)',
+                  [managerId, tx.rows[0].user_id, tx.rows[0].id, managerCommission]
+                );
+                await pool.query(
+                  "INSERT INTO transactions (user_id, type, amount, status, description) VALUES ($1, 'commission', $2, 'completed', $3)",
+                  [managerId, managerCommission, `Margem gerente ${managerCut}% sobre depósito de R$${tx.rows[0].amount} (afiliado ${affiliateRate}%)`]
+                );
+                logger.info('Comissão de gerente creditada', { managerId, managerCommission, managerCut, affiliateRate, depositId: req.params.id });
+              }
+            }
           }
         }
       }
