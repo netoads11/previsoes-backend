@@ -177,6 +177,25 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Erro interno' });
 });
 
+// ── Job: fecha mercados expirados a cada minuto ──
+const pool = require('./src/config/database');
+setInterval(async () => {
+  try {
+    const result = await pool.query(
+      `UPDATE markets SET status = 'closed'
+       WHERE status = 'open' AND expires_at IS NOT NULL AND expires_at <= NOW()
+       RETURNING id, question`
+    );
+    if (result.rows.length > 0) {
+      result.rows.forEach(m => {
+        logger.info('Mercado fechado automaticamente por expiração', { marketId: m.id, question: m.question });
+      });
+    }
+  } catch (err) {
+    logger.error('Erro no job de fechamento de mercados', { error: err.message });
+  }
+}, 60 * 1000);
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   logger.info(`Servidor rodando na porta ${PORT}`);
