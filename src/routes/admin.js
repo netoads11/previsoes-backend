@@ -766,6 +766,80 @@ router.delete('/banners/:id', auth, adminOnly, async (req, res) => {
   }
 });
 
+// ══════ STATS DASHBOARD ══════
+router.get('/stats', auth, adminOnly, async (req, res) => {
+  try {
+    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+
+    const [
+      usuarios, usuariosHoje, saldoJogadores,
+      depHoje, depTotal,
+      saqHoje, saqTotal,
+      pixHoje, pixTotal,
+      afiliados, afiliadosHoje,
+      mercados,
+    ] = await Promise.all([
+      // usuários total e ativos
+      pool.query(`SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE status != 'blocked') AS ativos FROM users`),
+      // usuários cadastrados hoje
+      pool.query(`SELECT COUNT(*) AS hoje FROM users WHERE DATE(created_at AT TIME ZONE 'UTC') = $1`, [today]),
+      // saldo real das carteiras
+      pool.query(`SELECT COALESCE(SUM(balance),0) AS total, COUNT(*) FILTER (WHERE balance > 0) AS com_saldo FROM wallets`),
+      // depósitos hoje (completed)
+      pool.query(`SELECT COALESCE(SUM(amount),0) AS valor, COUNT(*) AS total, COUNT(*) FILTER (WHERE status='completed') AS pagos FROM transactions WHERE type='deposit' AND DATE(created_at AT TIME ZONE 'UTC') = $1`, [today]),
+      // depósitos total (completed)
+      pool.query(`SELECT COALESCE(SUM(amount) FILTER (WHERE status='completed'),0) AS valor, COUNT(*) AS total, COUNT(*) FILTER (WHERE status='completed') AS pagos FROM transactions WHERE type='deposit'`),
+      // saques hoje (paid/completed)
+      pool.query(`SELECT COALESCE(SUM(amount) FILTER (WHERE status IN ('paid','completed')),0) AS valor, COUNT(*) AS total FROM transactions WHERE type='withdrawal' AND DATE(created_at AT TIME ZONE 'UTC') = $1`, [today]),
+      // saques total
+      pool.query(`SELECT COALESCE(SUM(amount) FILTER (WHERE status IN ('paid','completed')),0) AS valor, COUNT(*) FILTER (WHERE status IN ('paid','completed')) AS aprovados FROM transactions WHERE type='withdrawal'`),
+      // pix hoje
+      pool.query(`SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE status='completed') AS pagos FROM transactions WHERE type='deposit' AND DATE(created_at AT TIME ZONE 'UTC') = $1`, [today]),
+      // pix total
+      pool.query(`SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE status='completed') AS pagos FROM transactions WHERE type='deposit'`),
+      // saques afiliados total
+      pool.query(`SELECT COALESCE(SUM(amount) FILTER (WHERE status='approved'),0) AS valor, COUNT(*) FILTER (WHERE status='approved') AS aprovados FROM affiliate_withdrawal_requests`),
+      // saques afiliados hoje
+      pool.query(`SELECT COALESCE(SUM(amount) FILTER (WHERE status='approved'),0) AS valor FROM affiliate_withdrawal_requests WHERE DATE(created_at AT TIME ZONE 'UTC') = $1`, [today]),
+      // mercados
+      pool.query(`SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE status='open') AS ativos FROM markets`),
+    ]);
+
+    const depTotalValor = Number(depTotal.rows[0].valor);
+    const saqTotalValor = Number(saqTotal.rows[0].valor);
+
+    res.json({
+      usuarios_total: Number(usuarios.rows[0].total),
+      usuarios_ativos: Number(usuarios.rows[0].ativos),
+      usuarios_hoje: Number(usuariosHoje.rows[0].hoje),
+      saldo_jogadores: Number(saldoJogadores.rows[0].total),
+      usuarios_com_saldo: Number(saldoJogadores.rows[0].com_saldo),
+      dep_hoje_valor: Number(depHoje.rows[0].valor),
+      dep_hoje_total: Number(depHoje.rows[0].total),
+      dep_hoje_pagos: Number(depHoje.rows[0].pagos),
+      dep_total_valor: depTotalValor,
+      dep_total_pagos: Number(depTotal.rows[0].pagos),
+      saq_hoje_valor: Number(saqHoje.rows[0].valor),
+      saq_hoje_total: Number(saqHoje.rows[0].total),
+      saq_total_valor: saqTotalValor,
+      saq_total_aprovados: Number(saqTotal.rows[0].aprovados),
+      pix_hoje_total: Number(pixHoje.rows[0].total),
+      pix_hoje_pagos: Number(pixHoje.rows[0].pagos),
+      pix_total_total: Number(pixTotal.rows[0].total),
+      pix_total_pagos: Number(pixTotal.rows[0].pagos),
+      lucro_total: depTotalValor - saqTotalValor,
+      afiliados_total_valor: Number(afiliados.rows[0].valor),
+      afiliados_total_aprovados: Number(afiliados.rows[0].aprovados),
+      afiliados_hoje_valor: Number(afiliadosHoje.rows[0].valor),
+      mercados_total: Number(mercados.rows[0].total),
+      mercados_ativos: Number(mercados.rows[0].ativos),
+    });
+  } catch (err) {
+    logger.error('Erro em /stats', { error: err.message });
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
 // ══════ AUDITORIA ══════
 router.get('/audit', auth, adminOnly, async (req, res) => {
   try {
