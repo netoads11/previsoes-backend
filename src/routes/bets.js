@@ -14,7 +14,11 @@ router.post('/', auth, async (req, res) => {
       logger.warn('Aposta rejeitada: saldo insuficiente', { userId: user_id, balance: wallet.rows[0]?.balance, amount });
       return res.status(400).json({ error: 'Saldo insuficiente' });
     }
-    const market = await pool.query('SELECT * FROM markets WHERE id = $1 AND status = $2', [market_id, 'open']);
+    const market = await pool.query(
+      `SELECT * FROM markets WHERE id = $1 AND status = 'open'
+       AND (expires_at IS NULL OR expires_at > NOW())`,
+      [market_id]
+    );
     if (!market.rows[0]) {
       logger.warn('Aposta rejeitada: mercado não encontrado ou fechado', { userId: user_id, marketId: market_id });
       return res.status(404).json({ error: 'Mercado nao encontrado ou fechado' });
