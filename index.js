@@ -135,6 +135,7 @@ const betRoutes = require("./src/routes/bets");
 const walletRoutes = require("./src/routes/wallet");
 const adminRoutes = require("./src/routes/admin");
 const managerRoutes = require("./src/routes/manager");
+const affiliateRoutes = require("./src/routes/affiliate");
 
 // GET /api/user/referrals — dados de afiliado do usuário logado
 app.get('/api/user/referrals', require('./src/middleware/auth'), async (req, res) => {
@@ -182,6 +183,7 @@ app.use("/api/bets", betRoutes);
 app.use("/api/wallet", walletRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/manager", managerRoutes);
+app.use("/api/affiliate", affiliateRoutes);
 
 // ── Handler global de erros não capturados ──
 app.use((err, req, res, next) => {
