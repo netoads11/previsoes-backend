@@ -1093,6 +1093,84 @@ router.delete('/events/:id', auth, adminOnly, async (req, res) => {
   }
 });
 
+// ══════ CATEGORIAS ══════
+router.get('/categories', auth, adminOnly, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT c.*, COUNT(m.id) AS total_mercados
+       FROM categories c
+       LEFT JOIN markets m ON m.category = c.name
+       GROUP BY c.id ORDER BY c.name ASC`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    logger.error('Erro ao listar categorias', { error: err.message });
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+router.post('/categories', auth, adminOnly, async (req, res) => {
+  const { name } = req.body;
+  if (!name?.trim()) return res.status(400).json({ error: 'Nome obrigatório' });
+  try {
+    const result = await pool.query(
+      'INSERT INTO categories (name) VALUES ($1) RETURNING *',
+      [name.trim()]
+    );
+    await auditLog(req.user.id, 'CREATE_CATEGORY', {}, result.rows[0], req.ip);
+    res.json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(400).json({ error: 'Categoria já existe' });
+    logger.error('Erro ao criar categoria', { error: err.message });
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+router.put('/categories/:id', auth, adminOnly, async (req, res) => {
+  const { name } = req.body;
+  if (!name?.trim()) return res.status(400).json({ error: 'Nome obrigatório' });
+  try {
+    const before = await pool.query('SELECT * FROM categories WHERE id=$1', [req.params.id]);
+    if (!before.rows[0]) return res.status(404).json({ error: 'Categoria não encontrada' });
+    const oldName = before.rows[0].name;
+    const result = await pool.query(
+      'UPDATE categories SET name=$1, updated_at=NOW() WHERE id=$2 RETURNING *',
+      [name.trim(), req.params.id]
+    );
+    // Atualiza mercados que usavam o nome antigo
+    await pool.query('UPDATE markets SET category=$1 WHERE category=$2', [name.trim(), oldName]);
+    await auditLog(req.user.id, 'UPDATE_CATEGORY', before.rows[0], result.rows[0], req.ip);
+    res.json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(400).json({ error: 'Categoria já existe' });
+    logger.error('Erro ao editar categoria', { error: err.message });
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+router.delete('/categories/:id', auth, adminOnly, async (req, res) => {
+  try {
+    const before = await pool.query('SELECT * FROM categories WHERE id=$1', [req.params.id]);
+    if (!before.rows[0]) return res.status(404).json({ error: 'Categoria não encontrada' });
+    await pool.query('DELETE FROM categories WHERE id=$1', [req.params.id]);
+    await auditLog(req.user.id, 'DELETE_CATEGORY', before.rows[0], {}, req.ip);
+    res.json({ success: true });
+  } catch (err) {
+    logger.error('Erro ao deletar categoria', { error: err.message });
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+// Endpoint público para listar categorias (usado pelo frontend)
+router.get('/categories/public', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT name FROM categories ORDER BY name ASC');
+    res.json(result.rows.map((r: any) => r.name));
+  } catch (err) {
+    res.json([]);
+  }
+});
+
 // ══════ AUDITORIA ══════
 router.get('/audit', auth, adminOnly, async (req, res) => {
   try {
