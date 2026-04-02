@@ -1165,7 +1165,7 @@ router.delete('/categories/:id', auth, adminOnly, async (req, res) => {
 router.get('/categories/public', async (req, res) => {
   try {
     const result = await pool.query('SELECT name FROM categories ORDER BY name ASC');
-    res.json(result.rows.map((r: any) => r.name));
+    res.json(result.rows.map(r => r.name));
   } catch (err) {
     res.json([]);
   }
