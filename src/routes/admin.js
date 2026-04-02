@@ -581,11 +581,16 @@ router.put('/deposits/:id/approve', auth, adminOnly, async (req, res) => {
         const referrer = await pool.query('SELECT id, referred_by FROM users WHERE referral_code=$1', [referred_by]);
         if (referrer.rows[0]) {
           const referrerId = referrer.rows[0].id;
-          const ratesRow = await pool.query("SELECT value FROM settings WHERE key='affiliate_commissions'");
-          const rates = ratesRow.rows[0] ? JSON.parse(ratesRow.rows[0].value) : {};
-          const affiliateRate = Number(rates[referrerId] || 0);
+          const affSettingsRow = await pool.query(
+            'SELECT rev_share, baseline FROM affiliate_settings WHERE user_id=$1',
+            [referrerId]
+          );
+          const affiliateRate = Number(affSettingsRow.rows[0]?.rev_share || 0);
+          const baseline = Number(affSettingsRow.rows[0]?.baseline || 0);
+          const depositAmount = Number(tx.rows[0].amount);
+          const meetsBaseline = baseline === 0 || depositAmount >= baseline;
 
-          if (affiliateRate > 0) {
+          if (affiliateRate > 0 && meetsBaseline) {
             const affiliateCommission = Number((tx.rows[0].amount * affiliateRate / 100).toFixed(2));
             await pool.query(
               'INSERT INTO wallets (user_id, balance_affiliate) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET balance_affiliate = COALESCE(wallets.balance_affiliate, 0) + $2',
