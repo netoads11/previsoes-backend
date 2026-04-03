@@ -729,6 +729,15 @@ router.put('/withdrawals/:id/paid', auth, adminOnly, async (req, res) => {
 });
 
 // ══════ CONFIGURAÇÕES ══════
+router.get('/branding', async (req, res) => {
+  try {
+    const result = await pool.query("SELECT key, value FROM settings WHERE key IN ('logo_url','favicon_url','site_name')");
+    const out = {};
+    result.rows.forEach(r => out[r.key] = r.value);
+    res.json(out);
+  } catch { res.json({}); }
+});
+
 router.get('/settings', auth, adminOnly, async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM settings');
