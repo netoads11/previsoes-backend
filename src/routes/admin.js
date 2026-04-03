@@ -731,7 +731,7 @@ router.put('/withdrawals/:id/paid', auth, adminOnly, async (req, res) => {
 // ══════ CONFIGURAÇÕES ══════
 router.get('/branding', async (req, res) => {
   try {
-    const result = await pool.query("SELECT key, value FROM settings WHERE key IN ('logo_url','favicon_url','site_name','platform_name')");
+    const result = await pool.query("SELECT key, value FROM settings WHERE key IN ('logo_url','favicon_url','site_name','platform_name','theme_colors')");
     const out = {};
     result.rows.forEach(r => out[r.key] = r.value);
     res.json(out);
