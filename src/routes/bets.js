@@ -7,6 +7,12 @@ const logger = require('../config/logger');
 router.post('/', auth, async (req, res) => {
   const { market_id, choice, amount, option_id } = req.body;
   const user_id = req.user.id;
+  if (!market_id || !choice || !amount) {
+    return res.status(400).json({ error: 'market_id, choice e amount são obrigatórios' });
+  }
+  if (choice !== 'yes' && choice !== 'no') {
+    return res.status(400).json({ error: 'choice deve ser "yes" ou "no"' });
+  }
   logger.info('Aposta recebida', { userId: user_id, marketId: market_id, choice, amount });
   const client = await pool.connect();
   try {
@@ -91,7 +97,7 @@ router.post('/', auth, async (req, res) => {
 router.get('/my', auth, async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT b.*, m.question FROM bets b JOIN markets m ON b.market_id = m.id WHERE b.user_id = $1 ORDER BY b.created_at DESC',
+      'SELECT b.*, m.question, m.yes_label, m.no_label FROM bets b JOIN markets m ON b.market_id = m.id WHERE b.user_id = $1 ORDER BY b.created_at DESC',
       [req.user.id]
     );
     res.json(result.rows);
