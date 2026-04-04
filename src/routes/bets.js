@@ -54,6 +54,23 @@ router.post('/', auth, async (req, res) => {
       }
       const optOdds = choice === 'yes' ? parseFloat(opt.rows[0].yes_odds) : parseFloat(opt.rows[0].no_odds);
       multiplier = Math.max((1 - margin) * 100 / optOdds, 1);
+
+      // Atualizar yes_percent/no_percent com base nos volumes apostados nessa opção
+      const poolRes = await client.query(
+        `SELECT
+          COALESCE(SUM(CASE WHEN choice='yes' THEN amount ELSE 0 END), 0) AS yes_pool,
+          COALESCE(SUM(CASE WHEN choice='no'  THEN amount ELSE 0 END), 0) AS no_pool
+         FROM bets WHERE option_id = $1 AND status != 'cancelled'`,
+        [option_id]
+      );
+      const yPool = parseFloat(poolRes.rows[0].yes_pool) + (choice === 'yes' ? parseFloat(amount) : 0);
+      const nPool = parseFloat(poolRes.rows[0].no_pool)  + (choice === 'no'  ? parseFloat(amount) : 0);
+      const total = yPool + nPool;
+      const yPct = total > 0 ? Math.round((yPool / total) * 100) : 50;
+      await client.query(
+        'UPDATE market_options SET yes_percent = $1, no_percent = $2 WHERE id = $3',
+        [yPct, 100 - yPct, option_id]
+      );
     } else {
       // Mercado simples: odds parimutuel por pool
       const poolField = choice === 'yes' ? 'yes_pool' : 'no_pool';
