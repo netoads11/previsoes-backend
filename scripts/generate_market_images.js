@@ -39,36 +39,59 @@ function buildPrompt(question, category) {
   return `${q}, ${style}, cinematic wide banner, high quality, no text, no watermark`;
 }
 
-function downloadImage(url, destPath) {
+function downloadImage(url, destPath, redirects = 0) {
   return new Promise((resolve, reject) => {
+    if (redirects > 5) return reject(new Error('too many redirects'));
     const proto = url.startsWith('https') ? https : http;
     const file   = fs.createWriteStream(destPath);
-    const req    = proto.get(url, { timeout: 60000 }, res => {
+    const req    = proto.get(url, { timeout: 90000 }, res => {
       if (res.statusCode === 302 || res.statusCode === 301) {
-        file.close();
-        fs.unlinkSync(destPath);
-        return downloadImage(res.headers.location, destPath).then(resolve).catch(reject);
+        file.close(); if (fs.existsSync(destPath)) fs.unlinkSync(destPath);
+        return downloadImage(res.headers.location, destPath, redirects + 1).then(resolve).catch(reject);
       }
       if (res.statusCode !== 200) {
-        file.close();
-        fs.unlinkSync(destPath);
+        file.close(); if (fs.existsSync(destPath)) fs.unlinkSync(destPath);
         return reject(new Error(`HTTP ${res.statusCode}`));
       }
       res.pipe(file);
       file.on('finish', () => file.close(resolve));
     });
-    req.on('error', e => { fs.existsSync(destPath) && fs.unlinkSync(destPath); reject(e); });
+    req.on('error', e => { if (fs.existsSync(destPath)) fs.unlinkSync(destPath); reject(e); });
     req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
   });
+}
+
+async function downloadWithRetry(url, destPath, retries = 3) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      await downloadImage(url, destPath);
+      return;
+    } catch (e) {
+      if (i < retries - 1) {
+        const wait = (i + 1) * 12000;
+        process.stdout.write(` [retry ${i+1} em ${wait/1000}s]`);
+        await new Promise(r => setTimeout(r, wait));
+      } else throw e;
+    }
+  }
 }
 
 async function run() {
   if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
+  // Pula mercados de teste/QA — só processa os reais
+  const skipPattern = `AND question NOT ILIKE '%teste%'
+       AND question NOT ILIKE '%test%'
+       AND question NOT ILIKE '%QA%'
+       AND question NOT ILIKE '%bug%'
+       AND question NOT ILIKE '%edge case%'
+       AND question NOT ILIKE '%regressao%'`;
+
   const query = FORCE_ALL
-    ? `SELECT id, question, category FROM markets ORDER BY created_at DESC`
+    ? `SELECT id, question, category FROM markets WHERE TRUE ${skipPattern} ORDER BY created_at DESC`
     : `SELECT id, question, category FROM markets
        WHERE (image_url IS NULL OR image_url = '' OR image_url NOT LIKE '/uploads/%')
+       ${skipPattern}
        ORDER BY created_at DESC`;
 
   const { rows: markets } = await pool.query(query);
@@ -88,7 +111,7 @@ async function run() {
     process.stdout.write(`  [${ok + fail + 1}/${markets.length}] ${m.question.slice(0, 55)}... `);
 
     try {
-      await downloadImage(imgUrl, fpath);
+      await downloadWithRetry(imgUrl, fpath);
       await pool.query('UPDATE markets SET image_url = $1 WHERE id = $2', [dbPath, m.id]);
       console.log(`✓ ${fname}`);
       ok++;
@@ -97,8 +120,8 @@ async function run() {
       fail++;
     }
 
-    // Pausa entre requests para não sobrecarregar Pollinations
-    await new Promise(r => setTimeout(r, 1500));
+    // Pausa entre requests para não sobrecarregar Pollinations (rate limit)
+    await new Promise(r => setTimeout(r, 8000));
   }
 
   console.log(`\n✅ Concluído: ${ok} ok · ${fail} falhou\n`);
