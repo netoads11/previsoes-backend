@@ -78,7 +78,7 @@ router.post('/', auth, async (req, res) => {
     const potential_payout = parseFloat(amount) * multiplier;
 
     const bet = await client.query(
-      'INSERT INTO bets (user_id, market_id, choice, amount, odds, potential_payout, option_id) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+      "INSERT INTO bets (user_id, market_id, choice, amount, odds, potential_payout, option_id, status) VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending') RETURNING *",
       [user_id, market_id, choice, amount, multiplier.toFixed(4), potential_payout.toFixed(2), option_id || null]
     );
 
@@ -97,7 +97,12 @@ router.post('/', auth, async (req, res) => {
 router.get('/my', auth, async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT b.*, m.question, m.yes_label, m.no_label FROM bets b JOIN markets m ON b.market_id = m.id WHERE b.user_id = $1 ORDER BY b.created_at DESC',
+      `SELECT b.*, m.question, m.yes_label, m.no_label, mo.title AS option_title
+       FROM bets b
+       JOIN markets m ON b.market_id = m.id
+       LEFT JOIN market_options mo ON b.option_id = mo.id
+       WHERE b.user_id = $1
+       ORDER BY b.created_at DESC`,
       [req.user.id]
     );
     res.json(result.rows);
