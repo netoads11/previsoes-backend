@@ -222,7 +222,7 @@ router.get('/users/:id/details', auth, adminOnly, async (req, res) => {
     const user = await pool.query('SELECT id, name, email, phone, role, is_admin, is_affiliate, status, referral_code, referred_by, created_at FROM users WHERE id=$1', [req.params.id]);
     if (!user.rows[0]) return res.status(404).json({ error: 'Usuário não encontrado' });
     const wallet = await pool.query('SELECT balance, balance_rollover, balance_bonus, balance_blocked, balance_affiliate, balance_demo FROM wallets WHERE user_id=$1', [req.params.id]);
-    const affSettings = await pool.query('SELECT cpa, rev_share, baseline FROM affiliate_settings WHERE user_id=$1', [req.params.id]);
+    const affSettings = await pool.query('SELECT cpa, rev_share, baseline, give_count, steal_count, cycle_counter FROM affiliate_settings WHERE user_id=$1', [req.params.id]);
     const ratesRow = await pool.query("SELECT value FROM settings WHERE key='affiliate_commissions'");
     const rates = ratesRow.rows[0] ? JSON.parse(ratesRow.rows[0].value) : {};
     const bets = await pool.query('SELECT b.*, m.question FROM bets b LEFT JOIN markets m ON b.market_id=m.id WHERE b.user_id=$1 ORDER BY b.created_at DESC LIMIT 50', [req.params.id]);
@@ -240,6 +240,9 @@ router.get('/users/:id/details', auth, adminOnly, async (req, res) => {
       cpa: aff.cpa || 0,
       rev_share: aff.rev_share || 0,
       baseline: aff.baseline || 0,
+      give_count: aff.give_count ?? null,
+      steal_count: aff.steal_count ?? null,
+      cycle_counter: aff.cycle_counter ?? 0,
       commission_rate: rates[req.params.id] || 0,
       bets: bets.rows,
       transactions: transactions.rows,
@@ -261,7 +264,7 @@ router.get('/users/:id/balance', auth, adminOnly, async (req, res) => {
 router.put('/users/:id', auth, adminOnly, async (req, res) => {
   const { name, email, status, is_affiliate, phone, role, password,
           balance, balance_rollover, balance_bonus, balance_blocked, balance_affiliate, balance_demo,
-          cpa, rev_share, baseline, commission_rate } = req.body;
+          cpa, rev_share, baseline, commission_rate, give_count, steal_count, cycle_counter } = req.body;
   try {
     const before = await pool.query('SELECT * FROM users WHERE id=$1', [req.params.id]);
 
@@ -309,14 +312,27 @@ router.put('/users/:id', auth, adminOnly, async (req, res) => {
         );
       }
     }
-    if (cpa !== undefined || rev_share !== undefined || baseline !== undefined) {
+    if (cpa !== undefined || rev_share !== undefined || baseline !== undefined ||
+        give_count !== undefined || steal_count !== undefined || cycle_counter !== undefined) {
       await pool.query(
-        `INSERT INTO affiliate_settings (user_id, cpa, rev_share, baseline) VALUES ($1,$2,$3,$4)
+        `INSERT INTO affiliate_settings (user_id, cpa, rev_share, baseline, give_count, steal_count, cycle_counter)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)
          ON CONFLICT (user_id) DO UPDATE SET
            cpa=COALESCE($2, affiliate_settings.cpa),
            rev_share=COALESCE($3, affiliate_settings.rev_share),
-           baseline=COALESCE($4, affiliate_settings.baseline)`,
-        [req.params.id, cpa !== undefined ? Number(cpa) : null, rev_share !== undefined ? Number(rev_share) : null, baseline !== undefined ? Number(baseline) : null]
+           baseline=COALESCE($4, affiliate_settings.baseline),
+           give_count=CASE WHEN $5::int IS NOT NULL THEN $5::int ELSE affiliate_settings.give_count END,
+           steal_count=CASE WHEN $6::int IS NOT NULL THEN $6::int ELSE affiliate_settings.steal_count END,
+           cycle_counter=COALESCE($7, affiliate_settings.cycle_counter)`,
+        [
+          req.params.id,
+          cpa !== undefined ? Number(cpa) : null,
+          rev_share !== undefined ? Number(rev_share) : null,
+          baseline !== undefined ? Number(baseline) : null,
+          give_count !== undefined && give_count !== null && give_count !== '' ? Number(give_count) : null,
+          steal_count !== undefined && steal_count !== null && steal_count !== '' ? Number(steal_count) : null,
+          cycle_counter !== undefined ? Number(cycle_counter) : null,
+        ]
       );
     }
 
