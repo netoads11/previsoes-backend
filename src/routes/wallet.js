@@ -160,12 +160,23 @@ router.post("/withdraw", auth, async (req, res) => {
       return res.status(400).json({ error: "Saldo insuficiente" });
     }
     await pool.query("UPDATE wallets SET balance = balance - $1 WHERE user_id = $2", [amount, req.user.id]);
+
+    // Verifica limite de saque automático do admin
+    const limitRow = await pool.query("SELECT value FROM settings WHERE key='auto_withdraw_limit'");
+    const autoLimit = Number(limitRow.rows[0]?.value || 0);
+    const autoApprove = autoLimit > 0 && Number(amount) <= autoLimit;
+    const status = autoApprove ? 'completed' : 'pending';
+
     const result = await pool.query(
       "INSERT INTO transactions (user_id, type, amount, status, pix_key) VALUES ($1, $2, $3, $4, $5) RETURNING *",
-      [req.user.id, "withdrawal", amount, "pending", pix_key]
+      [req.user.id, "withdrawal", amount, status, pix_key]
     );
-    logger.info('Saque criado', { userId: req.user.id, txId: result.rows[0].id, amount });
-    res.status(201).json(result.rows[0]);
+    if (autoApprove) {
+      logger.info('Saque aprovado automaticamente', { userId: req.user.id, txId: result.rows[0].id, amount });
+    } else {
+      logger.info('Saque criado (aguarda aprovação manual)', { userId: req.user.id, txId: result.rows[0].id, amount });
+    }
+    res.status(201).json({ ...result.rows[0], auto_approved: autoApprove });
   } catch (err) {
     logger.error('Erro ao criar saque', { userId: req.user.id, amount, error: err.message, stack: err.stack });
     res.status(500).json({ error: "Erro interno" });
@@ -203,31 +214,6 @@ router.post("/affiliate-withdraw", auth, async (req, res) => {
   }
 });
 
-// GET /api/wallet/auto-withdraw — configuração atual
-router.get("/auto-withdraw", auth, async (req, res) => {
-  try {
-    const r = await pool.query("SELECT auto_withdraw_enabled, auto_withdraw_threshold, auto_withdraw_pix_key FROM wallets WHERE user_id=$1", [req.user.id]);
-    res.json({
-      enabled: r.rows[0]?.auto_withdraw_enabled || false,
-      threshold: Number(r.rows[0]?.auto_withdraw_threshold || 100),
-      pix_key: r.rows[0]?.auto_withdraw_pix_key || '',
-    });
-  } catch (err) { res.status(500).json({ error: 'Erro interno' }); }
-});
-
-// POST /api/wallet/auto-withdraw — salva configuração
-router.post("/auto-withdraw", auth, async (req, res) => {
-  const { enabled, threshold, pix_key } = req.body;
-  if (enabled && !pix_key) return res.status(400).json({ error: 'Chave PIX obrigatória' });
-  if (enabled && (!threshold || threshold <= 0)) return res.status(400).json({ error: 'Valor mínimo inválido' });
-  try {
-    await pool.query(
-      "UPDATE wallets SET auto_withdraw_enabled=$1, auto_withdraw_threshold=$2, auto_withdraw_pix_key=$3 WHERE user_id=$4",
-      [!!enabled, Number(threshold) || 100, pix_key || null, req.user.id]
-    );
-    res.json({ ok: true });
-  } catch (err) { res.status(500).json({ error: 'Erro interno' }); }
-});
 
 // GET /api/wallet/bonus — status do bônus/rollover
 router.get("/bonus", auth, async (req, res) => {
