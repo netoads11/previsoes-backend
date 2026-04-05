@@ -66,17 +66,23 @@ router.get('/me', auth, managerOnly, async (req, res) => {
     const totalAffiliates  = affiliates.rows.length;
     const totalReferred    = affiliates.rows.reduce((s, a) => s + Number(a.total_indicados || 0), 0);
     const totalCommissoes  = affiliates.rows.reduce((s, a) => s + Number(a.total_comissoes || 0), 0);
+    const avgAffiliateRevShare = totalAffiliates > 0
+      ? affiliates.rows.reduce((s, a) => s + Number(a.affiliate_rev_share || 0), 0) / totalAffiliates
+      : 0;
+    const myMargin = Number((myCommission.rev_share - avgAffiliateRevShare).toFixed(2));
 
     res.json({
       ...m,
       my_commission: myCommission,
       affiliates: affiliates.rows,
       stats: {
-        total_affiliates:  totalAffiliates,
-        total_referred:    totalReferred,
-        total_commissions: totalCommissoes,
-        manager_earnings:  totalEarnings,
-        my_rev_share:      myCommission.rev_share,
+        total_affiliates:       totalAffiliates,
+        total_referred:         totalReferred,
+        total_commissions:      totalCommissoes,
+        manager_earnings:       totalEarnings,
+        my_rev_share:           myCommission.rev_share,
+        avg_affiliate_rev_share: Number(avgAffiliateRevShare.toFixed(2)),
+        my_margin:              Math.max(0, myMargin),
       }
     });
   } catch (err) {
