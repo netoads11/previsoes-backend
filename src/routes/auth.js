@@ -6,7 +6,7 @@ const pool = require("../config/database");
 const logger = { info: console.log, warn: console.warn, error: console.error };
 
 router.post("/register", async (req, res) => {
-  const { name, email, password, ref } = req.body;
+  const { name, email, password, phone, ref } = req.body;
   logger.info('Tentativa de cadastro', { email });
   try {
     // Gerar referral_code único de 8 chars
@@ -26,8 +26,8 @@ router.post("/register", async (req, res) => {
 
     const hash = await bcrypt.hash(password, 10);
     const result = await pool.query(
-      "INSERT INTO users (name, email, password, referral_code, referred_by) VALUES ($1, $2, $3, $4, $5) RETURNING id, name, email, is_admin, referral_code",
-      [name, email, hash, referral_code, referred_by]
+      "INSERT INTO users (name, email, password, phone, referral_code, referred_by) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, is_admin, referral_code",
+      [name, email, hash, phone || null, referral_code, referred_by]
     );
     const user = result.rows[0];
 
