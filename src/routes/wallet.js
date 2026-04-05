@@ -4,6 +4,19 @@ const pool = require("../config/database");
 const auth = require("../middleware/auth");
 const logger = require("../config/logger");
 
+router.get("/transaction/:id/status", auth, async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT id, status, amount FROM transactions WHERE id=$1 AND user_id=$2",
+      [req.params.id, req.user.id]
+    );
+    if (!result.rows[0]) return res.status(404).json({ error: 'Transação não encontrada' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
 router.get("/balance", auth, async (req, res) => {
   try {
     const result = await pool.query("SELECT balance FROM wallets WHERE user_id = $1", [req.user.id]);
