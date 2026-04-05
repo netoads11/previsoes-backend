@@ -32,6 +32,11 @@ router.post('/:marketId', auth, async (req, res) => {
   try {
     if (!await isChatEnabled()) return res.status(403).json({ error: 'Chat desativado' });
 
+    const wallet = await pool.query('SELECT balance FROM wallets WHERE user_id=$1', [req.user.id]);
+    if (!wallet.rows[0] || Number(wallet.rows[0].balance) <= 0) {
+      return res.status(403).json({ error: 'Saldo insuficiente' });
+    }
+
     const market = await pool.query("SELECT id FROM markets WHERE id=$1 AND status='live'", [req.params.marketId]);
     if (!market.rows[0]) return res.status(404).json({ error: 'Mercado não está ao vivo' });
 
