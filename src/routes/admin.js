@@ -608,9 +608,9 @@ router.put('/deposits/:id/approve', auth, adminOnly, async (req, res) => {
 
     // Bônus de depósito + rollover
     try {
-      const cfg = await pool.query("SELECT key, value FROM settings WHERE key IN ('bonus_enabled','bonus_percentage','bonus_max','bonus_rollover')");
+      const cfg = await pool.query("SELECT key, value FROM settings WHERE key IN ('bonus_percentage','bonus_rollover')");
       const s = {}; cfg.rows.forEach(r => s[r.key] = r.value);
-      if (s['bonus_enabled'] === 'true') {
+      if (Number(s['bonus_percentage'] || 0) > 0) {
         const pct  = Number(s['bonus_percentage'] || 0) / 100;
         const max  = Number(s['bonus_max'] || 0);
         const mult = Number(s['bonus_rollover'] || 1);
