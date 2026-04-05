@@ -36,13 +36,25 @@ router.post('/', express.raw({ type: '*/*' }), async (req, res) => {
       payload = req.body;
     }
 
-    const { event, data } = payload;
-    logger.info('Webhook Simplify recebido', { event, externalId: data?.external_id });
+    logger.info('Webhook Simplify payload completo', { payload: JSON.stringify(payload) });
+
+    // Simplify pode mandar: { event, data } OU campos diretos no root
+    const event      = payload.event      || payload.type   || payload.status;
+    const externalId = payload.external_id
+                    || payload.data?.external_id
+                    || payload.transaction?.external_id
+                    || null;
+    const txAmount   = payload.amount
+                    || payload.data?.amount
+                    || payload.transaction?.amount
+                    || null;
+
+    logger.info('Webhook Simplify recebido', { event, externalId });
 
     switch (event) {
       case 'deposit.paid': {
-        // external_id = transaction_id no nosso banco
-        const { external_id, amount } = data;
+        const external_id = externalId;
+        const amount      = txAmount;
         const client = await pool.connect();
         try {
           await client.query('BEGIN');
@@ -76,28 +88,25 @@ router.post('/', express.raw({ type: '*/*' }), async (req, res) => {
       }
 
       case 'deposit.cancelled': {
-        const { external_id } = data;
         await pool.query(
           "UPDATE transactions SET status = 'cancelled' WHERE id = $1 AND type = 'deposit'",
-          [external_id]
+          [externalId]
         );
-        logger.info('Depósito cancelado', { external_id });
+        logger.info('Depósito cancelado', { externalId });
         break;
       }
 
       case 'withdrawal.paid': {
-        const { external_id } = data;
         await pool.query(
           "UPDATE transactions SET status = 'completed', paid_at = NOW() WHERE id = $1 AND type = 'withdrawal'",
-          [external_id]
+          [externalId]
         );
-        logger.info('Saque confirmado', { external_id });
+        logger.info('Saque confirmado', { externalId });
         break;
       }
 
       case 'withdrawal.cancelled': {
-        // Estorna saldo do usuário
-        const { external_id } = data;
+        const external_id = externalId;
         const client = await pool.connect();
         try {
           await client.query('BEGIN');
