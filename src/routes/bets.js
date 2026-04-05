@@ -67,10 +67,7 @@ router.post('/', auth, async (req, res) => {
         await client.query('ROLLBACK');
         return res.status(404).json({ error: 'Opção não encontrada' });
       }
-      const optOdds = choice === 'yes' ? parseFloat(opt.rows[0].yes_odds) : parseFloat(opt.rows[0].no_odds);
-      multiplier = Math.max((1 - margin) * 100 / optOdds, 1);
-
-      // Atualizar yes_percent/no_percent com base nos volumes apostados nessa opção
+      // Recalcula pools com base nas apostas existentes + aposta atual
       const poolRes = await client.query(
         `SELECT
           COALESCE(SUM(CASE WHEN choice='yes' THEN amount ELSE 0 END), 0) AS yes_pool,
@@ -81,11 +78,21 @@ router.post('/', auth, async (req, res) => {
       const yPool = parseFloat(poolRes.rows[0].yes_pool) + (choice === 'yes' ? parseFloat(amount) : 0);
       const nPool = parseFloat(poolRes.rows[0].no_pool)  + (choice === 'no'  ? parseFloat(amount) : 0);
       const total = yPool + nPool;
-      const yPct = total > 0 ? Math.round((yPool / total) * 100) : 50;
+
+      // Odds parimutuel: quanto maior o volume num lado, menor a odd
+      const yOdds = total > 0 && yPool > 0 ? (total / yPool) * 100 : 50;
+      const nOdds = total > 0 && nPool > 0 ? (total / nPool) * 100 : 50;
+      const yPct  = total > 0 ? Math.round((yPool / total) * 100) : 50;
+
+      // Salva odds e percentuais atualizados na opção
       await client.query(
-        'UPDATE market_options SET yes_percent = $1, no_percent = $2 WHERE id = $3',
-        [yPct, 100 - yPct, option_id]
+        'UPDATE market_options SET yes_odds = $1, no_odds = $2, yes_percent = $3, no_percent = $4 WHERE id = $5',
+        [yOdds.toFixed(2), nOdds.toFixed(2), yPct, 100 - yPct, option_id]
       );
+
+      // Multiplicador baseado na odd atual do lado apostado
+      const optOdds = choice === 'yes' ? yOdds : nOdds;
+      multiplier = Math.max((1 - margin) * 100 / optOdds, 1);
     } else {
       // Mercado simples: odds parimutuel por pool
       const poolField = choice === 'yes' ? 'yes_pool' : 'no_pool';
