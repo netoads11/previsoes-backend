@@ -9,6 +9,15 @@ async function isChatEnabled() {
   return !r.rows[0] || r.rows[0].value !== 'false';
 }
 
+// GET /api/chat/status — status público do chat (sem auth)
+router.get('/status', async (req, res) => {
+  try {
+    res.json({ chat_enabled: await isChatEnabled() });
+  } catch (err) {
+    res.json({ chat_enabled: true });
+  }
+});
+
 // GET /api/chat/:marketId — últimas 60 mensagens (público)
 router.get('/:marketId', async (req, res) => {
   try {
