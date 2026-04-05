@@ -70,10 +70,20 @@ router.post("/deposit", auth, async (req, res) => {
 
         // Mapeia campos da resposta Simplify
         // Documentado: qrcode, internal_id, external_id, status, amount
-        const qrCode      = pixData.qrcode       || pixData.qrCode      || pixData.qr_code      || pixData.emv || null;
-        const qrCodeImage = pixData.qrcode_image  || pixData.qrCodeImage || pixData.qr_code_image || null;
-        const expiresAt   = pixData.expiresAt    || pixData.expires_at   || null;
-        const gatewayId   = pixData.internal_id  || pixData.id           || pixData.deposit_id   || null;
+        const qrCode    = pixData.qrcode      || pixData.qrCode  || pixData.qr_code || pixData.emv || null;
+        const expiresAt = pixData.expiresAt   || pixData.expires_at || null;
+        const gatewayId = pixData.internal_id || pixData.id       || pixData.deposit_id || null;
+
+        // Gera imagem QR Code localmente a partir do código EMV
+        let qrCodeImage = pixData.qrcode_image || pixData.qrCodeImage || pixData.qr_code_image || null;
+        if (!qrCodeImage && qrCode) {
+          try {
+            const QRCode = require('qrcode');
+            qrCodeImage = await QRCode.toDataURL(qrCode, { width: 300, margin: 2 });
+          } catch (qrErr) {
+            logger.warn('Falha ao gerar imagem QR', { error: qrErr.message });
+          }
+        }
 
         await pool.query(
           `UPDATE transactions SET qr_code=$1, qr_code_image=$2, expires_at=$3, external_id=$4
