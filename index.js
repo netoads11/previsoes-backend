@@ -136,6 +136,7 @@ const walletRoutes = require("./src/routes/wallet");
 const adminRoutes = require("./src/routes/admin");
 const managerRoutes = require("./src/routes/manager");
 const affiliateRoutes = require("./src/routes/affiliate");
+const webhookRoutes   = require("./src/routes/webhook");
 
 // GET /api/user/referrals — dados de afiliado do usuário logado
 app.get('/api/user/referrals', require('./src/middleware/auth'), async (req, res) => {
@@ -184,6 +185,7 @@ app.use("/api/wallet", walletRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/manager", managerRoutes);
 app.use("/api/affiliate", affiliateRoutes);
+app.use("/api/webhook/simplify", webhookRoutes);
 
 // ── Handler global de erros não capturados ──
 app.use((err, req, res, next) => {
