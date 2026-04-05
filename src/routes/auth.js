@@ -3,6 +3,7 @@ const router = express.Router();
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const pool = require("../config/database");
+const auth = require("../middleware/auth");
 const logger = { info: console.log, warn: console.warn, error: console.error };
 
 router.post("/register", async (req, res) => {
@@ -70,6 +71,16 @@ router.post("/login", async (req, res) => {
     res.json({ user: { id: user.id, name: user.name, email: user.email, is_admin: user.is_admin, role: user.role, referral_code: user.referral_code }, token });
   } catch (err) {
     logger.error('Erro no login', { email, error: err.message, stack: err.stack });
+    res.status(500).json({ error: "Erro interno" });
+  }
+});
+
+router.get("/me", auth, async (req, res) => {
+  try {
+    const result = await pool.query("SELECT id, name, email, cpf, phone FROM users WHERE id = $1", [req.user.id]);
+    if (!result.rows[0]) return res.status(404).json({ error: "Usuário não encontrado" });
+    res.json(result.rows[0]);
+  } catch (err) {
     res.status(500).json({ error: "Erro interno" });
   }
 });
