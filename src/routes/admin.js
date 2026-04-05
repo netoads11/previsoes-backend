@@ -53,11 +53,11 @@ router.get('/markets', auth, adminOnly, async (req, res) => {
 });
 
 router.post('/markets', auth, adminOnly, async (req, res) => {
-  const { question, category, yes_odds, no_odds, expires_at, image_url, type, options, yes_label, no_label, multi_bet_mode } = req.body;
+  const { question, category, yes_odds, no_odds, expires_at, image_url, type, options, yes_label, no_label, multi_bet_mode, house_margin } = req.body;
   try {
     const result = await pool.query(
-      'INSERT INTO markets (question, category, yes_odds, no_odds, expires_at, status, image_url, type, yes_label, no_label, multi_bet_mode) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *',
-      [question, category || null, yes_odds || 50, no_odds || 50, expires_at || null, 'open', image_url || null, type || 'single', yes_label || 'SIM', no_label || 'NÃO', multi_bet_mode || 'yes_no']
+      'INSERT INTO markets (question, category, yes_odds, no_odds, expires_at, status, image_url, type, yes_label, no_label, multi_bet_mode, house_margin) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *',
+      [question, category || null, yes_odds || 50, no_odds || 50, expires_at || null, 'open', image_url || null, type || 'single', yes_label || 'SIM', no_label || 'NÃO', multi_bet_mode || 'yes_no', house_margin != null ? house_margin : 0.05]
     );
     const market = result.rows[0];
     if (type === 'multiple' && Array.isArray(options)) {
@@ -79,12 +79,12 @@ router.post('/markets', auth, adminOnly, async (req, res) => {
 });
 
 router.put('/markets/:id', auth, adminOnly, async (req, res) => {
-  const { question, category, yes_odds, no_odds, expires_at, status, image_url, type, options, yes_label, no_label, multi_bet_mode } = req.body;
+  const { question, category, yes_odds, no_odds, expires_at, status, image_url, type, options, yes_label, no_label, multi_bet_mode, house_margin } = req.body;
   try {
     const before = await pool.query('SELECT * FROM markets WHERE id = $1', [req.params.id]);
     const result = await pool.query(
-      'UPDATE markets SET question=COALESCE($1,question), category=COALESCE($2,category), yes_odds=COALESCE($3,yes_odds), no_odds=COALESCE($4,no_odds), expires_at=COALESCE($5,expires_at), status=COALESCE($6,status), image_url=COALESCE($7,image_url), type=COALESCE($8,type), yes_label=COALESCE($9,yes_label), no_label=COALESCE($10,no_label), multi_bet_mode=COALESCE($11,multi_bet_mode) WHERE id=$12 RETURNING *',
-      [question, category, yes_odds, no_odds, expires_at, status, image_url || null, type, yes_label || null, no_label || null, multi_bet_mode || null, req.params.id]
+      'UPDATE markets SET question=COALESCE($1,question), category=COALESCE($2,category), yes_odds=COALESCE($3,yes_odds), no_odds=COALESCE($4,no_odds), expires_at=COALESCE($5,expires_at), status=COALESCE($6,status), image_url=COALESCE($7,image_url), type=COALESCE($8,type), yes_label=COALESCE($9,yes_label), no_label=COALESCE($10,no_label), multi_bet_mode=COALESCE($11,multi_bet_mode), house_margin=COALESCE($13,house_margin) WHERE id=$12 RETURNING *',
+      [question, category, yes_odds, no_odds, expires_at, status, image_url || null, type, yes_label || null, no_label || null, multi_bet_mode || null, req.params.id, house_margin != null ? house_margin : null]
     );
     if (type === 'multiple' && Array.isArray(options)) {
       await pool.query('DELETE FROM market_options WHERE market_id=$1', [req.params.id]);
