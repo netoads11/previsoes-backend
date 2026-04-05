@@ -47,6 +47,9 @@ router.post('/:marketId', auth, async (req, res) => {
       'INSERT INTO chat_messages (market_id, user_id, username, message) VALUES ($1,$2,$3,$4) RETURNING id, username, message, created_at',
       [req.params.marketId, req.user.id, username, message.trim()]
     );
+    // Emite mensagem em tempo real para todos na sala
+    const io = req.app.get('io');
+    if (io) io.to(`market:${req.params.marketId}`).emit('new_message', result.rows[0]);
     res.status(201).json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: 'Erro interno' });

@@ -4,11 +4,21 @@ const helmet = require("helmet");
 const dotenv = require("dotenv");
 const path = require("path");
 const fs = require("fs");
+const http = require("http");
+const { Server } = require("socket.io");
 const logger = require("./src/config/logger");
 
 dotenv.config();
 
 const app = express();
+const httpServer = http.createServer(app);
+const io = new Server(httpServer, {
+  cors: { origin: '*', methods: ['GET','POST'] },
+  transports: ['websocket', 'polling'],
+});
+
+// Exporta io para uso nas rotas
+app.set('io', io);
 
 // ── Middleware de log HTTP ──
 app.use((req, res, next) => {
@@ -220,8 +230,20 @@ setInterval(async () => {
   }
 }, 60 * 1000);
 
+// ── Socket.io — Chat ao vivo ──
+io.on('connection', (socket) => {
+  // Entra na sala do mercado
+  socket.on('join_market', (marketId) => {
+    socket.join(`market:${marketId}`);
+  });
+
+  socket.on('leave_market', (marketId) => {
+    socket.leave(`market:${marketId}`);
+  });
+});
+
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
+httpServer.listen(PORT, () => {
   logger.info(`Servidor rodando na porta ${PORT}`);
 });
 
