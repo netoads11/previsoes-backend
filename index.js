@@ -230,32 +230,6 @@ setInterval(async () => {
   }
 }, 60 * 1000);
 
-// ── Job: saque automático — roda a cada 10 minutos ──
-setInterval(async () => {
-  try {
-    const users = await pool.query(
-      `SELECT w.user_id, w.balance, w.auto_withdraw_threshold, w.auto_withdraw_pix_key
-       FROM wallets w WHERE w.auto_withdraw_enabled = true AND w.auto_withdraw_pix_key IS NOT NULL
-       AND w.balance >= w.auto_withdraw_threshold`
-    );
-    for (const u of users.rows) {
-      const client = await pool.connect();
-      try {
-        await client.query('BEGIN');
-        const amt = Number(u.balance);
-        await client.query('UPDATE wallets SET balance = balance - $1 WHERE user_id = $2', [amt, u.user_id]);
-        await client.query(
-          "INSERT INTO transactions (user_id, type, amount, status, pix_key) VALUES ($1,'withdrawal',$2,'pending',$3)",
-          [u.user_id, amt, u.auto_withdraw_pix_key]
-        );
-        await client.query('COMMIT');
-        logger.info('Saque automático gerado', { user_id: u.user_id, amount: amt });
-      } catch (e) { await client.query('ROLLBACK'); logger.error('Erro saque automático', { error: e.message }); }
-      finally { client.release(); }
-    }
-  } catch (err) { logger.error('Job saque automático falhou', { error: err.message }); }
-}, 10 * 60 * 1000);
-
 // ── Socket.io — Chat ao vivo ──
 io.on('connection', (socket) => {
   // Entra na sala do mercado
