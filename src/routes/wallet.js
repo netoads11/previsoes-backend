@@ -165,18 +165,61 @@ router.post("/withdraw", auth, async (req, res) => {
     const limitRow = await pool.query("SELECT value FROM settings WHERE key='auto_withdraw_limit'");
     const autoLimit = Number(limitRow.rows[0]?.value || 0);
     const autoApprove = autoLimit > 0 && Number(amount) <= autoLimit;
-    const status = autoApprove ? 'completed' : 'pending';
 
+    // Cria transação inicialmente como pending
     const result = await pool.query(
       "INSERT INTO transactions (user_id, type, amount, status, pix_key) VALUES ($1, $2, $3, $4, $5) RETURNING *",
-      [req.user.id, "withdrawal", amount, status, pix_key]
+      [req.user.id, "withdrawal", amount, 'pending', pix_key]
     );
+    const tx = result.rows[0];
+
     if (autoApprove) {
-      logger.info('Saque aprovado automaticamente', { userId: req.user.id, txId: result.rows[0].id, amount });
+      // Tenta processar via gateway
+      let gatewayOk = false;
+      try {
+        const simplify = require('../services/simplify.service');
+        const creds = await simplify.getCredentials();
+        if (creds.simplify_active === 'true' && creds.simplify_client_id) {
+          const userRow = await pool.query('SELECT name, email, cpf, phone FROM users WHERE id=$1', [req.user.id]);
+          const u = userRow.rows[0] || {};
+
+          // Detecta tipo da chave PIX
+          const key = pix_key.replace(/\s/g, '');
+          let pixKeyType = 'random';
+          if (/^\d{11}$/.test(key.replace(/\D/g,''))) pixKeyType = 'cpf';
+          else if (/^\d{14}$/.test(key.replace(/\D/g,''))) pixKeyType = 'cnpj';
+          else if (key.includes('@')) pixKeyType = 'email';
+          else if (/^\+?\d{10,13}$/.test(key.replace(/\D/g,''))) pixKeyType = 'phone';
+
+          const webhookBase = process.env.API_BASE_URL || 'http://ww5y7zdj6dn9y63m6zk4ec7r.187.77.248.115.sslip.io';
+          await simplify.createWithdrawal({
+            amount: Number(amount),
+            pixKey: key,
+            pixKeyType,
+            recipientName: u.name || 'Cliente',
+            recipientDocument: (u.cpf || '').replace(/\D/g,''),
+            recipientEmail: u.email || '',
+            recipientPhone: (u.phone || '').replace(/\D/g,''),
+            externalId: tx.id,
+            webhookURL: `${webhookBase}/api/webhook/simplify`,
+          });
+          gatewayOk = true;
+          logger.info('Saque enviado ao gateway', { txId: tx.id, amount, pixKeyType });
+        }
+      } catch (gwErr) {
+        logger.warn('Gateway falhou no saque automático — aguarda aprovação manual', { txId: tx.id, error: gwErr.message });
+      }
+
+      // Se gateway processou, marca como completed; se falhou, mantém pending
+      const finalStatus = gatewayOk ? 'completed' : 'pending';
+      await pool.query("UPDATE transactions SET status=$1 WHERE id=$2", [finalStatus, tx.id]);
+      tx.status = finalStatus;
+      logger.info('Saque automático', { txId: tx.id, amount, gatewayOk, finalStatus });
     } else {
-      logger.info('Saque criado (aguarda aprovação manual)', { userId: req.user.id, txId: result.rows[0].id, amount });
+      logger.info('Saque criado (aguarda aprovação manual)', { userId: req.user.id, txId: tx.id, amount });
     }
-    res.status(201).json({ ...result.rows[0], auto_approved: autoApprove });
+
+    res.status(201).json({ ...tx, auto_approved: autoApprove });
   } catch (err) {
     logger.error('Erro ao criar saque', { userId: req.user.id, amount, error: err.message, stack: err.stack });
     res.status(500).json({ error: "Erro interno" });
