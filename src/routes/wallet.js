@@ -68,11 +68,12 @@ router.post("/deposit", auth, async (req, res) => {
           customerPhone: phoneNum,
         });
 
-        // Mapeia campos da resposta Simplify (podem variar: qrCode, qr_code, emv, etc.)
-        const qrCode      = pixData.qrCode      || pixData.qr_code      || pixData.emv        || pixData.payload || null;
-        const qrCodeImage = pixData.qrCodeImage  || pixData.qr_code_image || pixData.imageQrCode || null;
+        // Mapeia campos da resposta Simplify
+        // Documentado: qrcode, internal_id, external_id, status, amount
+        const qrCode      = pixData.qrcode       || pixData.qrCode      || pixData.qr_code      || pixData.emv || null;
+        const qrCodeImage = pixData.qrcode_image  || pixData.qrCodeImage || pixData.qr_code_image || null;
         const expiresAt   = pixData.expiresAt    || pixData.expires_at   || null;
-        const gatewayId   = pixData.id           || pixData.deposit_id   || null;
+        const gatewayId   = pixData.internal_id  || pixData.id           || pixData.deposit_id   || null;
 
         await pool.query(
           `UPDATE transactions SET qr_code=$1, qr_code_image=$2, expires_at=$3, external_id=$4
