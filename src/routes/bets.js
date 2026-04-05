@@ -124,6 +124,54 @@ router.post('/', auth, async (req, res) => {
     await client.query('COMMIT');
     logger.info('Aposta registrada', { betId: bet.rows[0].id, userId: user_id, marketId: market_id, choice, amount, multiplier: multiplier.toFixed(4) });
     res.status(201).json(bet.rows[0]);
+
+    // Comissão de afiliado sobre aposta (RevShare da taxa da casa) — fora da transação principal
+    try {
+      const depositor = await pool.query('SELECT referred_by FROM users WHERE id=$1', [user_id]);
+      const referred_by = depositor.rows[0]?.referred_by;
+      if (referred_by) {
+        const referrer = await pool.query('SELECT id FROM users WHERE referral_code=$1', [referred_by]);
+        if (referrer.rows[0]) {
+          const referrerId = referrer.rows[0].id;
+          const affSettings = await pool.query(
+            'SELECT rev_share, baseline FROM affiliate_settings WHERE user_id=$1',
+            [referrerId]
+          );
+          const revShare  = Number(affSettings.rows[0]?.rev_share || 0);
+          const baseline  = Number(affSettings.rows[0]?.baseline  || 0);
+          const betAmount = Number(amount);
+
+          // Só comissiona se rev_share > 0 e aposta >= baseline (ou baseline = 0)
+          if (revShare > 0 && (baseline === 0 || betAmount >= baseline)) {
+            // Lucro da casa = amount × margin
+            const houseProfit    = Number((betAmount * margin).toFixed(2));
+            const commission     = Number((houseProfit * revShare / 100).toFixed(2));
+
+            if (commission > 0) {
+              await pool.query(
+                `INSERT INTO wallets (user_id, balance_affiliate) VALUES ($1, $2)
+                 ON CONFLICT (user_id) DO UPDATE SET
+                   balance_affiliate = COALESCE(wallets.balance_affiliate, 0) + $2`,
+                [referrerId, commission]
+              );
+              await pool.query(
+                `INSERT INTO referral_commissions (referrer_id, referred_id, transaction_id, amount)
+                 VALUES ($1, $2, $3, $4)`,
+                [referrerId, user_id, bet.rows[0].id, commission]
+              );
+              await pool.query(
+                `INSERT INTO transactions (user_id, type, amount, status, description)
+                 VALUES ($1, 'commission', $2, 'completed', $3)`,
+                [referrerId, commission, `Comissão aposta ${revShare}% × margem ${(margin*100).toFixed(0)}% sobre R$${betAmount} (bet ${bet.rows[0].id.slice(0,8)})`]
+              );
+              logger.info('Comissão de aposta creditada', { referrerId, commission, revShare, houseProfit, betId: bet.rows[0].id });
+            }
+          }
+        }
+      }
+    } catch (commErr) {
+      logger.error('Erro ao processar comissão de aposta', { betId: bet.rows[0].id, error: commErr.message });
+    }
   } catch (err) {
     await client.query('ROLLBACK');
     logger.error('Erro ao registrar aposta', { userId: user_id, marketId: market_id, error: err.message, stack: err.stack });
