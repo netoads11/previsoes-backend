@@ -42,6 +42,21 @@ router.post('/', auth, async (req, res) => {
 
     await client.query('UPDATE wallets SET balance = balance - $1 WHERE user_id = $2', [amount, user_id]);
 
+    // Rollover: acumula valor apostado e libera bônus se completou
+    const wlt = await client.query('SELECT COALESCE(balance_bonus,0) AS bonus, COALESCE(rollover_required,0) AS rr, COALESCE(rollover_done,0) AS rd FROM wallets WHERE user_id=$1', [user_id]);
+    if (wlt.rows[0] && Number(wlt.rows[0].rr) > 0) {
+      const newDone = Number(wlt.rows[0].rd) + Number(amount);
+      const rr = Number(wlt.rows[0].rr);
+      const bonus = Number(wlt.rows[0].bonus);
+      if (newDone >= rr && bonus > 0) {
+        // Rollover completo — transfere bônus para saldo real
+        await client.query('UPDATE wallets SET rollover_done=$1, balance=balance+$2, balance_bonus=0, rollover_required=0 WHERE user_id=$3', [newDone, bonus, user_id]);
+        logger.info('Rollover completo — bônus liberado', { user_id, bonus });
+      } else {
+        await client.query('UPDATE wallets SET rollover_done=$1 WHERE user_id=$2', [newDone, user_id]);
+      }
+    }
+
     const margin = parseFloat(market.rows[0].house_margin) || 0.05;
     let multiplier;
 

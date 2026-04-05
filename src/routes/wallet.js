@@ -19,9 +19,17 @@ router.get("/transaction/:id/status", auth, async (req, res) => {
 
 router.get("/balance", auth, async (req, res) => {
   try {
-    const result = await pool.query("SELECT balance FROM wallets WHERE user_id = $1", [req.user.id]);
-    if (!result.rows[0]) return res.json({ balance: 0 });
-    res.json({ balance: result.rows[0].balance });
+    const result = await pool.query(
+      "SELECT balance, COALESCE(balance_bonus,0) AS balance_bonus, COALESCE(rollover_required,0) AS rollover_required, COALESCE(rollover_done,0) AS rollover_done FROM wallets WHERE user_id = $1",
+      [req.user.id]
+    );
+    if (!result.rows[0]) return res.json({ balance: 0, balance_bonus: 0, rollover_required: 0, rollover_done: 0 });
+    res.json({
+      balance: Number(result.rows[0].balance),
+      balance_bonus: Number(result.rows[0].balance_bonus),
+      rollover_required: Number(result.rows[0].rollover_required),
+      rollover_done: Number(result.rows[0].rollover_done),
+    });
   } catch (err) {
     logger.error('Erro ao buscar saldo', { userId: req.user.id, error: err.message });
     res.status(500).json({ error: "Erro interno" });
@@ -111,6 +119,26 @@ router.post("/deposit", auth, async (req, res) => {
       logger.warn('Simplify indisponível, depósito manual', { txId: tx.id, error: gwErr.message });
     }
 
+    // Aplica bônus de depósito se ativo
+    try {
+      const cfg = await pool.query("SELECT value FROM settings WHERE key IN ('bonus_enabled','bonus_percentage','bonus_max','bonus_rollover') ORDER BY key");
+      const s = {}; cfg.rows.forEach(r => s[r.key] = r.value);
+      if (s['bonus_enabled'] === 'true') {
+        const pct = Number(s['bonus_percentage'] || 0) / 100;
+        const max = Number(s['bonus_max'] || 0);
+        const mult = Number(s['bonus_rollover'] || 1);
+        let bonus = amount * pct;
+        if (max > 0 && bonus > max) bonus = max;
+        if (bonus > 0) {
+          await pool.query(
+            'UPDATE wallets SET balance_bonus = COALESCE(balance_bonus,0)+$1, rollover_required = COALESCE(rollover_required,0)+$2, rollover_done = COALESCE(rollover_done,0) WHERE user_id=$3',
+            [bonus, bonus * mult, req.user.id]
+          );
+          logger.info('Bônus aplicado', { userId: req.user.id, bonus, rollover: bonus * mult });
+        }
+      }
+    } catch (bErr) { logger.warn('Erro ao aplicar bônus', { error: bErr.message }); }
+
     // Fallback: sem gateway ativo — transação pendente para aprovação manual
     logger.info('Depósito criado (manual)', { userId: req.user.id, txId: tx.id, amount });
     res.status(201).json({ ...tx, pix_code: null, qr_code_image: null });
@@ -173,6 +201,44 @@ router.post("/affiliate-withdraw", auth, async (req, res) => {
     logger.error('Erro ao solicitar saque afiliado', { userId: req.user.id, error: err.message });
     res.status(500).json({ error: "Erro interno" });
   }
+});
+
+// GET /api/wallet/auto-withdraw — configuração atual
+router.get("/auto-withdraw", auth, async (req, res) => {
+  try {
+    const r = await pool.query("SELECT auto_withdraw_enabled, auto_withdraw_threshold, auto_withdraw_pix_key FROM wallets WHERE user_id=$1", [req.user.id]);
+    res.json({
+      enabled: r.rows[0]?.auto_withdraw_enabled || false,
+      threshold: Number(r.rows[0]?.auto_withdraw_threshold || 100),
+      pix_key: r.rows[0]?.auto_withdraw_pix_key || '',
+    });
+  } catch (err) { res.status(500).json({ error: 'Erro interno' }); }
+});
+
+// POST /api/wallet/auto-withdraw — salva configuração
+router.post("/auto-withdraw", auth, async (req, res) => {
+  const { enabled, threshold, pix_key } = req.body;
+  if (enabled && !pix_key) return res.status(400).json({ error: 'Chave PIX obrigatória' });
+  if (enabled && (!threshold || threshold <= 0)) return res.status(400).json({ error: 'Valor mínimo inválido' });
+  try {
+    await pool.query(
+      "UPDATE wallets SET auto_withdraw_enabled=$1, auto_withdraw_threshold=$2, auto_withdraw_pix_key=$3 WHERE user_id=$4",
+      [!!enabled, Number(threshold) || 100, pix_key || null, req.user.id]
+    );
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: 'Erro interno' }); }
+});
+
+// GET /api/wallet/bonus — status do bônus/rollover
+router.get("/bonus", auth, async (req, res) => {
+  try {
+    const r = await pool.query(
+      "SELECT COALESCE(balance_bonus,0) AS bonus, COALESCE(rollover_required,0) AS required, COALESCE(rollover_done,0) AS done FROM wallets WHERE user_id=$1",
+      [req.user.id]
+    );
+    const w = r.rows[0] || {};
+    res.json({ balance_bonus: Number(w.bonus), rollover_required: Number(w.required), rollover_done: Number(w.done) });
+  } catch (err) { res.status(500).json({ error: 'Erro interno' }); }
 });
 
 module.exports = router;
