@@ -292,6 +292,23 @@ router.put('/users/:id', auth, adminOnly, async (req, res) => {
     }
 
     // Atualiza affiliate_settings
+    // Se está promovendo para afiliado e não tem settings ainda, aplica os defaults globais
+    const becomingAffiliate = role === 'affiliate' || is_affiliate === true;
+    if (becomingAffiliate) {
+      const existing = await pool.query('SELECT user_id FROM affiliate_settings WHERE user_id=$1', [req.params.id]);
+      if (!existing.rows.length) {
+        const defaults = await pool.query(
+          "SELECT key, value FROM settings WHERE key IN ('cpa_value','rev_share','min_deposit_commission')"
+        );
+        const d = {};
+        defaults.rows.forEach(r => d[r.key] = r.value);
+        await pool.query(
+          `INSERT INTO affiliate_settings (user_id, cpa, rev_share, baseline) VALUES ($1,$2,$3,$4)
+           ON CONFLICT (user_id) DO NOTHING`,
+          [req.params.id, Number(cpa ?? d.cpa_value ?? 0), Number(rev_share ?? d.rev_share ?? 0), Number(baseline ?? d.min_deposit_commission ?? 0)]
+        );
+      }
+    }
     if (cpa !== undefined || rev_share !== undefined || baseline !== undefined) {
       await pool.query(
         `INSERT INTO affiliate_settings (user_id, cpa, rev_share, baseline) VALUES ($1,$2,$3,$4)
