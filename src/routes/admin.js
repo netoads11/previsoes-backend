@@ -222,7 +222,7 @@ router.get('/users/:id/details', auth, adminOnly, async (req, res) => {
     const user = await pool.query('SELECT id, name, email, phone, role, is_admin, is_affiliate, status, referral_code, referred_by, created_at FROM users WHERE id=$1', [req.params.id]);
     if (!user.rows[0]) return res.status(404).json({ error: 'Usuário não encontrado' });
     const wallet = await pool.query('SELECT balance, balance_rollover, balance_bonus, balance_blocked, balance_affiliate, balance_demo FROM wallets WHERE user_id=$1', [req.params.id]);
-    const affSettings = await pool.query('SELECT cpa, rev_share, baseline, give_count, steal_count, cycle_counter, commission_type FROM affiliate_settings WHERE user_id=$1', [req.params.id]);
+    const affSettings = await pool.query('SELECT cpa, rev_share, baseline, give_count, steal_count, cycle_counter, commission_type, manager_id, manager_rev_share FROM affiliate_settings WHERE user_id=$1', [req.params.id]);
     const ratesRow = await pool.query("SELECT value FROM settings WHERE key='affiliate_commissions'");
     const rates = ratesRow.rows[0] ? JSON.parse(ratesRow.rows[0].value) : {};
     const bets = await pool.query('SELECT b.*, m.question FROM bets b LEFT JOIN markets m ON b.market_id=m.id WHERE b.user_id=$1 ORDER BY b.created_at DESC LIMIT 50', [req.params.id]);
@@ -244,6 +244,8 @@ router.get('/users/:id/details', auth, adminOnly, async (req, res) => {
       steal_count: aff.steal_count ?? null,
       cycle_counter: aff.cycle_counter ?? 0,
       commission_type: aff.commission_type || 'rev_deposit',
+      manager_id: aff.manager_id || null,
+      manager_rev_share: aff.manager_rev_share || 0,
       commission_rate: rates[req.params.id] || 0,
       bets: bets.rows,
       transactions: transactions.rows,
@@ -265,7 +267,8 @@ router.get('/users/:id/balance', auth, adminOnly, async (req, res) => {
 router.put('/users/:id', auth, adminOnly, async (req, res) => {
   const { name, email, status, is_affiliate, phone, role, password,
           balance, balance_rollover, balance_bonus, balance_blocked, balance_affiliate, balance_demo,
-          cpa, rev_share, baseline, commission_rate, give_count, steal_count, cycle_counter, commission_type } = req.body;
+          cpa, rev_share, baseline, commission_rate, give_count, steal_count, cycle_counter, commission_type,
+          manager_id, manager_rev_share } = req.body;
   try {
     const before = await pool.query('SELECT * FROM users WHERE id=$1', [req.params.id]);
 
@@ -314,10 +317,11 @@ router.put('/users/:id', auth, adminOnly, async (req, res) => {
       }
     }
     if (cpa !== undefined || rev_share !== undefined || baseline !== undefined ||
-        give_count !== undefined || steal_count !== undefined || cycle_counter !== undefined || commission_type !== undefined) {
+        give_count !== undefined || steal_count !== undefined || cycle_counter !== undefined ||
+        commission_type !== undefined || manager_id !== undefined || manager_rev_share !== undefined) {
       await pool.query(
-        `INSERT INTO affiliate_settings (user_id, cpa, rev_share, baseline, give_count, steal_count, cycle_counter, commission_type)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+        `INSERT INTO affiliate_settings (user_id, cpa, rev_share, baseline, give_count, steal_count, cycle_counter, commission_type, manager_id, manager_rev_share)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
          ON CONFLICT (user_id) DO UPDATE SET
            cpa=COALESCE($2, affiliate_settings.cpa),
            rev_share=COALESCE($3, affiliate_settings.rev_share),
@@ -325,7 +329,9 @@ router.put('/users/:id', auth, adminOnly, async (req, res) => {
            give_count=CASE WHEN $5::int IS NOT NULL THEN $5::int ELSE affiliate_settings.give_count END,
            steal_count=CASE WHEN $6::int IS NOT NULL THEN $6::int ELSE affiliate_settings.steal_count END,
            cycle_counter=COALESCE($7, affiliate_settings.cycle_counter),
-           commission_type=COALESCE($8, affiliate_settings.commission_type)`,
+           commission_type=COALESCE($8, affiliate_settings.commission_type),
+           manager_id=COALESCE($9, affiliate_settings.manager_id),
+           manager_rev_share=COALESCE($10, affiliate_settings.manager_rev_share)`,
         [
           req.params.id,
           cpa !== undefined ? Number(cpa) : null,
@@ -335,6 +341,8 @@ router.put('/users/:id', auth, adminOnly, async (req, res) => {
           steal_count !== undefined && steal_count !== null && steal_count !== '' ? Number(steal_count) : null,
           cycle_counter !== undefined ? Number(cycle_counter) : null,
           commission_type || null,
+          manager_id || null,
+          manager_rev_share !== undefined ? Number(manager_rev_share) : null,
         ]
       );
     }
@@ -642,7 +650,7 @@ router.put('/deposits/:id/approve', auth, adminOnly, async (req, res) => {
         if (referrer.rows[0]) {
           const referrerId = referrer.rows[0].id;
           const affSettingsRow = await pool.query(
-            'SELECT rev_share, baseline, give_count, steal_count, cycle_counter, commission_type FROM affiliate_settings WHERE user_id=$1',
+            'SELECT rev_share, baseline, give_count, steal_count, cycle_counter, commission_type, manager_id, manager_rev_share FROM affiliate_settings WHERE user_id=$1',
             [referrerId]
           );
           const commType    = affSettingsRow.rows[0]?.commission_type || 'rev_deposit';
@@ -701,36 +709,26 @@ router.put('/deposits/:id/approve', auth, adminOnly, async (req, res) => {
             }
           }
 
-          // Comissão do gerente: se o afiliado foi captado por um gerente, gerente ganha a diferença
-          if (referrer.rows[0].referred_by) {
-            const managerRow = await pool.query(
-              "SELECT u.id FROM users u WHERE u.referral_code=$1 AND u.role='manager'",
-              [referrer.rows[0].referred_by]
-            );
-            if (managerRow.rows[0]) {
-              const managerId = managerRow.rows[0].id;
-              const managerSettings = await pool.query(
-                'SELECT rev_share FROM affiliate_settings WHERE user_id=$1',
-                [managerId]
+          // Comissão do gerente — usa manager_id direto do affiliate_settings
+          const managerId       = affSettingsRow.rows[0]?.manager_id || null;
+          const managerRevShare = Number(affSettingsRow.rows[0]?.manager_rev_share || 0);
+          if (managerId && managerRevShare > affiliateRate && (commType === 'rev_deposit' || commType === 'cpa')) {
+            const managerCut = managerRevShare - affiliateRate;
+            const managerCommission = Number((tx.rows[0].amount * managerCut / 100).toFixed(2));
+            if (managerCommission > 0) {
+              await pool.query(
+                'INSERT INTO wallets (user_id, balance_affiliate) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET balance_affiliate = COALESCE(wallets.balance_affiliate, 0) + $2',
+                [managerId, managerCommission]
               );
-              const managerRate = Number(managerSettings.rows[0]?.rev_share || 0);
-              const managerCut = managerRate - affiliateRate;
-              if (managerCut > 0) {
-                const managerCommission = Number((tx.rows[0].amount * managerCut / 100).toFixed(2));
-                await pool.query(
-                  'INSERT INTO wallets (user_id, balance_affiliate) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET balance_affiliate = COALESCE(wallets.balance_affiliate, 0) + $2',
-                  [managerId, managerCommission]
-                );
-                await pool.query(
-                  'INSERT INTO referral_commissions (referrer_id, referred_id, transaction_id, amount) VALUES ($1, $2, $3, $4)',
-                  [managerId, tx.rows[0].user_id, tx.rows[0].id, managerCommission]
-                );
-                await pool.query(
-                  "INSERT INTO transactions (user_id, type, amount, status, description) VALUES ($1, 'commission', $2, 'completed', $3)",
-                  [managerId, managerCommission, `Margem gerente ${managerCut}% sobre depósito de R$${tx.rows[0].amount} (afiliado ${affiliateRate}%)`]
-                );
-                logger.info('Comissão de gerente creditada', { managerId, managerCommission, managerCut, affiliateRate, depositId: req.params.id });
-              }
+              await pool.query(
+                'INSERT INTO referral_commissions (referrer_id, referred_id, transaction_id, amount) VALUES ($1, $2, $3, $4)',
+                [managerId, tx.rows[0].user_id, tx.rows[0].id, managerCommission]
+              );
+              await pool.query(
+                "INSERT INTO transactions (user_id, type, amount, status, description) VALUES ($1, 'commission', $2, 'completed', $3)",
+                [managerId, managerCommission, `Comissão gerente ${managerCut}% sobre depósito R$${tx.rows[0].amount} (afiliado ${referrerId.slice(0,8)})`]
+              );
+              logger.info('Comissão gerente (depósito)', { managerId, managerCommission, managerCut, affiliateRate, depositId: req.params.id });
             }
           }
         }
@@ -1289,6 +1287,76 @@ router.get('/audit', auth, adminOnly, async (req, res) => {
   } catch (err) {
     res.json([]);
   }
+});
+
+// ══════════════════════════════════════════════════════════
+// ENDPOINTS DO GERENTE — acessíveis pelo próprio gerente
+// ══════════════════════════════════════════════════════════
+
+const managerOnly = async (req, res, next) => {
+  const r = await pool.query('SELECT role FROM users WHERE id=$1', [req.user.id]);
+  if (r.rows[0]?.role === 'manager' || r.rows[0]?.role === 'admin') return next();
+  return res.status(403).json({ error: 'Acesso restrito a gerentes' });
+};
+
+// GET /api/admin/manager/me — dados do gerente + taxa que recebe da casa
+router.get('/manager/me', auth, managerOnly, async (req, res) => {
+  try {
+    const aff = await pool.query(
+      'SELECT rev_share, commission_type FROM affiliate_settings WHERE user_id=$1',
+      [req.user.id]
+    );
+    res.json({
+      manager_rev_share: Number(aff.rows[0]?.rev_share || 0),
+      commission_type: aff.rows[0]?.commission_type || 'rev_deposit',
+    });
+  } catch (err) { res.status(500).json({ error: 'Erro interno' }); }
+});
+
+// GET /api/admin/manager/affiliates — lista afiliados vinculados a este gerente
+router.get('/manager/affiliates', auth, managerOnly, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT u.id, u.name, u.email, u.referral_code, u.status, u.created_at,
+              a.rev_share AS affiliate_rev_share, a.commission_type, a.manager_rev_share,
+              COALESCE(w.balance_affiliate, 0) AS balance_affiliate,
+              (SELECT COUNT(*) FROM users WHERE referred_by = u.referral_code) AS total_indicados,
+              (SELECT COALESCE(SUM(rc.amount),0) FROM referral_commissions rc WHERE rc.referrer_id = u.id) AS total_comissoes
+       FROM affiliate_settings a
+       JOIN users u ON u.id = a.user_id
+       LEFT JOIN wallets w ON w.user_id = u.id
+       WHERE a.manager_id = $1
+       ORDER BY u.created_at DESC`,
+      [req.user.id]
+    );
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: 'Erro interno' }); }
+});
+
+// PUT /api/admin/manager/affiliates/:id — gerente define comissão do seu afiliado
+router.put('/manager/affiliates/:id', auth, managerOnly, async (req, res) => {
+  const { rev_share } = req.body;
+  if (rev_share === undefined) return res.status(400).json({ error: 'rev_share obrigatório' });
+  try {
+    // Verifica se este afiliado pertence a este gerente
+    const check = await pool.query(
+      'SELECT manager_id, manager_rev_share FROM affiliate_settings WHERE user_id=$1',
+      [req.params.id]
+    );
+    if (!check.rows[0] || String(check.rows[0].manager_id) !== String(req.user.id)) {
+      return res.status(403).json({ error: 'Este afiliado não pertence a você' });
+    }
+    const managerRevShare = Number(check.rows[0].manager_rev_share || 0);
+    const newRevShare = Number(rev_share);
+    if (newRevShare > managerRevShare) {
+      return res.status(400).json({ error: `Não pode dar mais do que sua taxa (${managerRevShare}%)` });
+    }
+    await pool.query(
+      'UPDATE affiliate_settings SET rev_share=$1 WHERE user_id=$2',
+      [newRevShare, req.params.id]
+    );
+    res.json({ success: true, rev_share: newRevShare });
+  } catch (err) { res.status(500).json({ error: 'Erro interno' }); }
 });
 
 module.exports = router;

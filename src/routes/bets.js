@@ -134,38 +134,61 @@ router.post('/', auth, async (req, res) => {
         if (referrer.rows[0]) {
           const referrerId = referrer.rows[0].id;
           const affSettings = await pool.query(
-            'SELECT rev_share, baseline, commission_type FROM affiliate_settings WHERE user_id=$1',
+            'SELECT rev_share, baseline, commission_type, manager_id, manager_rev_share FROM affiliate_settings WHERE user_id=$1',
             [referrerId]
           );
-          const commType  = affSettings.rows[0]?.commission_type || 'rev_deposit';
-          const revShare  = Number(affSettings.rows[0]?.rev_share || 0);
-          const baseline  = Number(affSettings.rows[0]?.baseline  || 0);
-          const betAmount = Number(amount);
+          const commType       = affSettings.rows[0]?.commission_type || 'rev_deposit';
+          const revShare       = Number(affSettings.rows[0]?.rev_share || 0);
+          const baseline       = Number(affSettings.rows[0]?.baseline  || 0);
+          const managerId      = affSettings.rows[0]?.manager_id || null;
+          const managerRevShare= Number(affSettings.rows[0]?.manager_rev_share || 0);
+          const betAmount      = Number(amount);
 
           // Só comissiona por aposta se tipo for rev_bet
-          if (commType === 'rev_bet' && revShare > 0 && (baseline === 0 || betAmount >= baseline)) {
-            // Lucro da casa = amount × margin
-            const houseProfit    = Number((betAmount * margin).toFixed(2));
-            const commission     = Number((houseProfit * revShare / 100).toFixed(2));
+          if (commType === 'rev_bet' && (baseline === 0 || betAmount >= baseline)) {
+            const houseProfit = Number((betAmount * margin).toFixed(2));
 
-            if (commission > 0) {
-              await pool.query(
-                `INSERT INTO wallets (user_id, balance_affiliate) VALUES ($1, $2)
-                 ON CONFLICT (user_id) DO UPDATE SET
-                   balance_affiliate = COALESCE(wallets.balance_affiliate, 0) + $2`,
-                [referrerId, commission]
-              );
-              await pool.query(
-                `INSERT INTO referral_commissions (referrer_id, referred_id, transaction_id, amount)
-                 VALUES ($1, $2, $3, $4)`,
-                [referrerId, user_id, bet.rows[0].id, commission]
-              );
-              await pool.query(
-                `INSERT INTO transactions (user_id, type, amount, status, description)
-                 VALUES ($1, 'commission', $2, 'completed', $3)`,
-                [referrerId, commission, `Comissão aposta ${revShare}% × margem ${(margin*100).toFixed(0)}% sobre R$${betAmount} (bet ${bet.rows[0].id.slice(0,8)})`]
-              );
-              logger.info('Comissão de aposta creditada', { referrerId, commission, revShare, houseProfit, betId: bet.rows[0].id });
+            // Comissão do afiliado
+            if (revShare > 0) {
+              const commission = Number((houseProfit * revShare / 100).toFixed(2));
+              if (commission > 0) {
+                await pool.query(
+                  `INSERT INTO wallets (user_id, balance_affiliate) VALUES ($1, $2)
+                   ON CONFLICT (user_id) DO UPDATE SET
+                     balance_affiliate = COALESCE(wallets.balance_affiliate, 0) + $2`,
+                  [referrerId, commission]
+                );
+                await pool.query(
+                  `INSERT INTO referral_commissions (referrer_id, referred_id, transaction_id, amount)
+                   VALUES ($1, $2, $3, $4)`,
+                  [referrerId, user_id, bet.rows[0].id, commission]
+                );
+                await pool.query(
+                  `INSERT INTO transactions (user_id, type, amount, status, description)
+                   VALUES ($1, 'commission', $2, 'completed', $3)`,
+                  [referrerId, commission, `Comissão aposta ${revShare}% × margem ${(margin*100).toFixed(0)}% sobre R$${betAmount} (bet ${bet.rows[0].id.slice(0,8)})`]
+                );
+                logger.info('Comissão afiliado (rev_bet)', { referrerId, commission, revShare, betId: bet.rows[0].id });
+              }
+            }
+
+            // Comissão do gerente — recebe (manager_rev_share - revShare) da casa
+            if (managerId && managerRevShare > revShare) {
+              const managerCut = Number((houseProfit * (managerRevShare - revShare) / 100).toFixed(2));
+              if (managerCut > 0) {
+                await pool.query(
+                  `INSERT INTO wallets (user_id, balance_affiliate) VALUES ($1, $2)
+                   ON CONFLICT (user_id) DO UPDATE SET
+                     balance_affiliate = COALESCE(wallets.balance_affiliate, 0) + $2`,
+                  [managerId, managerCut]
+                );
+                await pool.query(
+                  `INSERT INTO transactions (user_id, type, amount, status, description)
+                   VALUES ($1, 'commission', $2, 'completed', $3)`,
+                  [managerId, managerCut, `Comissão gerente ${managerRevShare - revShare}% sobre aposta R$${betAmount} (afiliado ${referrerId.slice(0,8)})`]
+                );
+                logger.info('Comissão gerente (rev_bet)', { managerId, managerCut, managerRevShare, revShare, betId: bet.rows[0].id });
+              }
             }
           }
         }
