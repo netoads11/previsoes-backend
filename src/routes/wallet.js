@@ -56,6 +56,7 @@ router.post("/deposit", auth, async (req, res) => {
           await pool.query('UPDATE users SET cpf=$1 WHERE id=$2', [document, req.user.id]);
         }
 
+        const webhookBase = process.env.API_BASE_URL || 'http://ww5y7zdj6dn9y63m6zk4ec7r.187.77.248.115.sslip.io';
         const pixData = await simplify.createPixCharge({
           amount: Number(amount),
           externalId: tx.id,
@@ -63,6 +64,7 @@ router.post("/deposit", auth, async (req, res) => {
           customerDocument: document,
           customerEmail: u.email || '',
           customerPhone: phoneNum,
+          webhookURL: `${webhookBase}/api/webhook/simplify`,
         });
 
         // Mapeia campos da resposta Simplify
