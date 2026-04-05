@@ -222,7 +222,7 @@ router.get('/users/:id/details', auth, adminOnly, async (req, res) => {
     const user = await pool.query('SELECT id, name, email, phone, role, is_admin, is_affiliate, status, referral_code, referred_by, created_at FROM users WHERE id=$1', [req.params.id]);
     if (!user.rows[0]) return res.status(404).json({ error: 'Usuário não encontrado' });
     const wallet = await pool.query('SELECT balance, balance_rollover, balance_bonus, balance_blocked, balance_affiliate, balance_demo FROM wallets WHERE user_id=$1', [req.params.id]);
-    const affSettings = await pool.query('SELECT cpa, rev_share, baseline, give_count, steal_count, cycle_counter FROM affiliate_settings WHERE user_id=$1', [req.params.id]);
+    const affSettings = await pool.query('SELECT cpa, rev_share, baseline, give_count, steal_count, cycle_counter, commission_type FROM affiliate_settings WHERE user_id=$1', [req.params.id]);
     const ratesRow = await pool.query("SELECT value FROM settings WHERE key='affiliate_commissions'");
     const rates = ratesRow.rows[0] ? JSON.parse(ratesRow.rows[0].value) : {};
     const bets = await pool.query('SELECT b.*, m.question FROM bets b LEFT JOIN markets m ON b.market_id=m.id WHERE b.user_id=$1 ORDER BY b.created_at DESC LIMIT 50', [req.params.id]);
@@ -243,6 +243,7 @@ router.get('/users/:id/details', auth, adminOnly, async (req, res) => {
       give_count: aff.give_count ?? null,
       steal_count: aff.steal_count ?? null,
       cycle_counter: aff.cycle_counter ?? 0,
+      commission_type: aff.commission_type || 'rev_deposit',
       commission_rate: rates[req.params.id] || 0,
       bets: bets.rows,
       transactions: transactions.rows,
@@ -264,7 +265,7 @@ router.get('/users/:id/balance', auth, adminOnly, async (req, res) => {
 router.put('/users/:id', auth, adminOnly, async (req, res) => {
   const { name, email, status, is_affiliate, phone, role, password,
           balance, balance_rollover, balance_bonus, balance_blocked, balance_affiliate, balance_demo,
-          cpa, rev_share, baseline, commission_rate, give_count, steal_count, cycle_counter } = req.body;
+          cpa, rev_share, baseline, commission_rate, give_count, steal_count, cycle_counter, commission_type } = req.body;
   try {
     const before = await pool.query('SELECT * FROM users WHERE id=$1', [req.params.id]);
 
@@ -313,17 +314,18 @@ router.put('/users/:id', auth, adminOnly, async (req, res) => {
       }
     }
     if (cpa !== undefined || rev_share !== undefined || baseline !== undefined ||
-        give_count !== undefined || steal_count !== undefined || cycle_counter !== undefined) {
+        give_count !== undefined || steal_count !== undefined || cycle_counter !== undefined || commission_type !== undefined) {
       await pool.query(
-        `INSERT INTO affiliate_settings (user_id, cpa, rev_share, baseline, give_count, steal_count, cycle_counter)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)
+        `INSERT INTO affiliate_settings (user_id, cpa, rev_share, baseline, give_count, steal_count, cycle_counter, commission_type)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
          ON CONFLICT (user_id) DO UPDATE SET
            cpa=COALESCE($2, affiliate_settings.cpa),
            rev_share=COALESCE($3, affiliate_settings.rev_share),
            baseline=COALESCE($4, affiliate_settings.baseline),
            give_count=CASE WHEN $5::int IS NOT NULL THEN $5::int ELSE affiliate_settings.give_count END,
            steal_count=CASE WHEN $6::int IS NOT NULL THEN $6::int ELSE affiliate_settings.steal_count END,
-           cycle_counter=COALESCE($7, affiliate_settings.cycle_counter)`,
+           cycle_counter=COALESCE($7, affiliate_settings.cycle_counter),
+           commission_type=COALESCE($8, affiliate_settings.commission_type)`,
         [
           req.params.id,
           cpa !== undefined ? Number(cpa) : null,
@@ -332,6 +334,7 @@ router.put('/users/:id', auth, adminOnly, async (req, res) => {
           give_count !== undefined && give_count !== null && give_count !== '' ? Number(give_count) : null,
           steal_count !== undefined && steal_count !== null && steal_count !== '' ? Number(steal_count) : null,
           cycle_counter !== undefined ? Number(cycle_counter) : null,
+          commission_type || null,
         ]
       );
     }
@@ -639,15 +642,17 @@ router.put('/deposits/:id/approve', auth, adminOnly, async (req, res) => {
         if (referrer.rows[0]) {
           const referrerId = referrer.rows[0].id;
           const affSettingsRow = await pool.query(
-            'SELECT rev_share, baseline, give_count, steal_count, cycle_counter FROM affiliate_settings WHERE user_id=$1',
+            'SELECT rev_share, baseline, give_count, steal_count, cycle_counter, commission_type FROM affiliate_settings WHERE user_id=$1',
             [referrerId]
           );
+          const commType    = affSettingsRow.rows[0]?.commission_type || 'rev_deposit';
           const affiliateRate = Number(affSettingsRow.rows[0]?.rev_share || 0);
           const baseline = Number(affSettingsRow.rows[0]?.baseline || 0);
           const depositAmount = Number(tx.rows[0].amount);
           const meetsBaseline = baseline === 0 || depositAmount >= baseline;
 
-          if (affiliateRate > 0 && meetsBaseline) {
+          // Só processa comissão de depósito se tipo for rev_deposit ou cpa
+          if (affiliateRate > 0 && meetsBaseline && (commType === 'rev_deposit' || commType === 'cpa')) {
             // Lógica de manipulação de ciclo
             const globalCfg = await pool.query(
               "SELECT key, value FROM settings WHERE key IN ('aff_manipulation_enabled','aff_give_count','aff_steal_count')"

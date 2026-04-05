@@ -134,15 +134,16 @@ router.post('/', auth, async (req, res) => {
         if (referrer.rows[0]) {
           const referrerId = referrer.rows[0].id;
           const affSettings = await pool.query(
-            'SELECT rev_share, baseline FROM affiliate_settings WHERE user_id=$1',
+            'SELECT rev_share, baseline, commission_type FROM affiliate_settings WHERE user_id=$1',
             [referrerId]
           );
+          const commType  = affSettings.rows[0]?.commission_type || 'rev_deposit';
           const revShare  = Number(affSettings.rows[0]?.rev_share || 0);
           const baseline  = Number(affSettings.rows[0]?.baseline  || 0);
           const betAmount = Number(amount);
 
-          // Só comissiona se rev_share > 0 e aposta >= baseline (ou baseline = 0)
-          if (revShare > 0 && (baseline === 0 || betAmount >= baseline)) {
+          // Só comissiona por aposta se tipo for rev_bet
+          if (commType === 'rev_bet' && revShare > 0 && (baseline === 0 || betAmount >= baseline)) {
             // Lucro da casa = amount × margin
             const houseProfit    = Number((betAmount * margin).toFixed(2));
             const commission     = Number((houseProfit * revShare / 100).toFixed(2));
