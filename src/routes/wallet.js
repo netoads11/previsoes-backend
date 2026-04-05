@@ -159,18 +159,31 @@ router.post("/withdraw", auth, async (req, res) => {
       logger.warn('Saque rejeitado: saldo insuficiente', { userId: req.user.id, balance: wallet.rows[0]?.balance, amount });
       return res.status(400).json({ error: "Saldo insuficiente" });
     }
+
+    // Busca taxa de saque e limite automático
+    const cfgRows = await pool.query(
+      "SELECT key, value FROM settings WHERE key IN ('taxa_saque','auto_withdraw_limit')"
+    );
+    const cfg = {};
+    cfgRows.rows.forEach(r => cfg[r.key] = r.value);
+    const taxaPct   = Number(cfg['taxa_saque'] || 0);           // ex: 2 = 2%
+    const autoLimit = Number(cfg['auto_withdraw_limit'] || 0);
+
+    // Calcula taxa e valor líquido
+    const fee       = Number((Number(amount) * taxaPct / 100).toFixed(2));
+    const netAmount = Number((Number(amount) - fee).toFixed(2)); // valor que o usuário efetivamente recebe
+
+    // Deduz o valor bruto do saldo (usuário perde amount inteiro, taxa fica na casa)
     await pool.query("UPDATE wallets SET balance = balance - $1 WHERE user_id = $2", [amount, req.user.id]);
 
-    // Verifica limite de saque automático do admin
-    const limitRow = await pool.query("SELECT value FROM settings WHERE key='auto_withdraw_limit'");
-    const autoLimit = Number(limitRow.rows[0]?.value || 0);
     const autoApprove = autoLimit > 0 && Number(amount) <= autoLimit;
 
-    // Cria transação inicialmente como pending
+    // Cria transação com amount bruto e fee separado
     const result = await pool.query(
-      "INSERT INTO transactions (user_id, type, amount, status, pix_key) VALUES ($1, $2, $3, $4, $5) RETURNING *",
-      [req.user.id, "withdrawal", amount, 'pending', pix_key]
+      "INSERT INTO transactions (user_id, type, amount, fee, status, pix_key) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *",
+      [req.user.id, "withdrawal", amount, fee, 'pending', pix_key]
     );
+    logger.info('Taxa de saque aplicada', { userId: req.user.id, amount, fee, netAmount, taxaPct });
     const tx = result.rows[0];
 
     if (autoApprove) {
@@ -193,7 +206,7 @@ router.post("/withdraw", auth, async (req, res) => {
 
           const webhookBase = process.env.API_BASE_URL || 'http://ww5y7zdj6dn9y63m6zk4ec7r.187.77.248.115.sslip.io';
           await simplify.createWithdrawal({
-            amount: Number(amount),
+            amount: netAmount,
             pixKey: key,
             pixKeyType,
             recipientName: u.name || 'Cliente',
@@ -219,7 +232,7 @@ router.post("/withdraw", auth, async (req, res) => {
       logger.info('Saque criado (aguarda aprovação manual)', { userId: req.user.id, txId: tx.id, amount });
     }
 
-    res.status(201).json({ ...tx, auto_approved: autoApprove });
+    res.status(201).json({ ...tx, fee, net_amount: netAmount, auto_approved: autoApprove });
   } catch (err) {
     logger.error('Erro ao criar saque', { userId: req.user.id, amount, error: err.message, stack: err.stack });
     res.status(500).json({ error: "Erro interno" });
