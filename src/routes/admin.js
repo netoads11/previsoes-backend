@@ -315,6 +315,27 @@ router.put('/users/:id', auth, adminOnly, async (req, res) => {
           [req.params.id, Number(cpa ?? d.cpa_value ?? 0), Number(rev_share ?? d.rev_share ?? 0), Number(baseline ?? d.min_deposit_commission ?? 0)]
         );
       }
+
+      // Auto-vincular ao gerente se o usuário veio pelo link de um gerente e manager_id não foi explicitamente informado
+      if (!manager_id) {
+        const userRow = await pool.query('SELECT referred_by FROM users WHERE id=$1', [req.params.id]);
+        const referredBy = userRow.rows[0]?.referred_by;
+        if (referredBy) {
+          const mgrRow = await pool.query(
+            "SELECT u.id FROM users u WHERE u.referral_code=$1 AND u.role='manager'",
+            [referredBy]
+          );
+          if (mgrRow.rows[0]) {
+            const autoMgrId = mgrRow.rows[0].id;
+            const mgrSettings = await pool.query('SELECT rev_share FROM affiliate_settings WHERE user_id=$1', [autoMgrId]);
+            const autoMgrRevShare = Number(mgrSettings.rows[0]?.rev_share || 0);
+            await pool.query(
+              'UPDATE affiliate_settings SET manager_id=$1, manager_rev_share=$2 WHERE user_id=$3',
+              [autoMgrId, autoMgrRevShare, req.params.id]
+            );
+          }
+        }
+      }
     }
     if (cpa !== undefined || rev_share !== undefined || baseline !== undefined ||
         give_count !== undefined || steal_count !== undefined || cycle_counter !== undefined ||
