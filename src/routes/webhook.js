@@ -21,17 +21,21 @@ router.post('/', express.raw({ type: '*/*' }), async (req, res) => {
     const creds = await getCredentials();
     const secret = creds.simplify_webhook_secret;
 
-    // Verificar assinatura se secret estiver configurado
-    if (secret) {
-      const signature = req.headers['x-signature'] || req.headers['x-simplify-signature'] || '';
-      const rawBody   = req.body; // Buffer graças ao express.raw()
-      if (!verifyWebhook(rawBody, signature, secret)) {
-        logger.warn('Webhook Simplify: assinatura inválida', { signature });
-        return res.status(401).json({ error: 'Assinatura inválida' });
+    // body pode ser Buffer (express.raw) ou objeto (express.json global)
+    let payload;
+    if (Buffer.isBuffer(req.body)) {
+      payload = JSON.parse(req.body.toString());
+      if (secret) {
+        const signature = req.headers['x-signature'] || req.headers['x-simplify-signature'] || '';
+        if (!verifyWebhook(req.body, signature, secret)) {
+          logger.warn('Webhook Simplify: assinatura inválida', { signature });
+          return res.status(401).json({ error: 'Assinatura inválida' });
+        }
       }
+    } else {
+      payload = req.body;
     }
 
-    const payload = JSON.parse(req.body.toString());
     const { event, data } = payload;
     logger.info('Webhook Simplify recebido', { event, externalId: data?.external_id });
 
