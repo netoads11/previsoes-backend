@@ -29,7 +29,7 @@ router.get("/transactions", auth, async (req, res) => {
 });
 
 router.post("/deposit", auth, async (req, res) => {
-  const { amount, cpf, phone } = req.body;
+  const { amount, cpf } = req.body;
   if (!amount || amount <= 0) return res.status(400).json({ error: "Valor invalido" });
   logger.info('Solicitação de depósito', { userId: req.user.id, amount });
   try {
@@ -48,15 +48,12 @@ router.post("/deposit", auth, async (req, res) => {
       if (creds.simplify_active === 'true' && creds.simplify_client_id) {
         const userRow = await pool.query('SELECT name, email, cpf, phone FROM users WHERE id=$1', [req.user.id]);
         const u = userRow.rows[0] || {};
-        const document  = (cpf   || u.cpf   || '').replace(/\D/g,'');
-        const phoneNum  = (phone  || u.phone || '').replace(/\D/g,'');
+        const document = (cpf || u.cpf || '').replace(/\D/g,'');
+        const phoneNum = (u.phone || '').replace(/\D/g,'');
 
-        // Salva CPF e telefone para próximas vezes
-        if ((cpf && !u.cpf) || (phone && !u.phone)) {
-          await pool.query(
-            'UPDATE users SET cpf=COALESCE($1,cpf), phone=COALESCE($2,phone) WHERE id=$3',
-            [cpf ? document : null, phone ? phoneNum : null, req.user.id]
-          );
+        // Salva CPF para próximas vezes
+        if (cpf && !u.cpf) {
+          await pool.query('UPDATE users SET cpf=$1 WHERE id=$2', [document, req.user.id]);
         }
 
         const pixData = await simplify.createPixCharge({
