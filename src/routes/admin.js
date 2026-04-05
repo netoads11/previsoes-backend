@@ -606,6 +606,30 @@ router.put('/deposits/:id/approve', auth, adminOnly, async (req, res) => {
       [tx.rows[0].user_id, tx.rows[0].amount]
     );
 
+    // Bônus de depósito + rollover
+    try {
+      const cfg = await pool.query("SELECT key, value FROM settings WHERE key IN ('bonus_enabled','bonus_percentage','bonus_max','bonus_rollover')");
+      const s = {}; cfg.rows.forEach(r => s[r.key] = r.value);
+      if (s['bonus_enabled'] === 'true') {
+        const pct  = Number(s['bonus_percentage'] || 0) / 100;
+        const max  = Number(s['bonus_max'] || 0);
+        const mult = Number(s['bonus_rollover'] || 1);
+        let bonus  = Number(tx.rows[0].amount) * pct;
+        if (max > 0 && bonus > max) bonus = max;
+        if (bonus > 0) {
+          await pool.query(
+            `INSERT INTO wallets (user_id, balance_bonus, rollover_required, rollover_done)
+             VALUES ($1, $2, $3, 0)
+             ON CONFLICT (user_id) DO UPDATE SET
+               balance_bonus      = COALESCE(wallets.balance_bonus, 0) + $2,
+               rollover_required  = COALESCE(wallets.rollover_required, 0) + $3`,
+            [tx.rows[0].user_id, bonus, Number((bonus * mult).toFixed(2))]
+          );
+          logger.info('Bônus aplicado no approve', { userId: tx.rows[0].user_id, bonus, rollover: bonus * mult });
+        }
+      }
+    } catch (bErr) { logger.warn('Erro ao aplicar bônus no approve', { error: bErr.message }); }
+
     // Comissão de afiliado + gerente
     try {
       const depositor = await pool.query('SELECT referred_by FROM users WHERE id=$1', [tx.rows[0].user_id]);

@@ -119,27 +119,8 @@ router.post("/deposit", auth, async (req, res) => {
       logger.warn('Simplify indisponível, depósito manual', { txId: tx.id, error: gwErr.message });
     }
 
-    // Aplica bônus de depósito se ativo
-    try {
-      const cfg = await pool.query("SELECT value FROM settings WHERE key IN ('bonus_enabled','bonus_percentage','bonus_max','bonus_rollover') ORDER BY key");
-      const s = {}; cfg.rows.forEach(r => s[r.key] = r.value);
-      if (s['bonus_enabled'] === 'true') {
-        const pct = Number(s['bonus_percentage'] || 0) / 100;
-        const max = Number(s['bonus_max'] || 0);
-        const mult = Number(s['bonus_rollover'] || 1);
-        let bonus = amount * pct;
-        if (max > 0 && bonus > max) bonus = max;
-        if (bonus > 0) {
-          await pool.query(
-            'UPDATE wallets SET balance_bonus = COALESCE(balance_bonus,0)+$1, rollover_required = COALESCE(rollover_required,0)+$2, rollover_done = COALESCE(rollover_done,0) WHERE user_id=$3',
-            [bonus, bonus * mult, req.user.id]
-          );
-          logger.info('Bônus aplicado', { userId: req.user.id, bonus, rollover: bonus * mult });
-        }
-      }
-    } catch (bErr) { logger.warn('Erro ao aplicar bônus', { error: bErr.message }); }
-
     // Fallback: sem gateway ativo — transação pendente para aprovação manual
+    // Bônus é aplicado no approve (admin.js), não aqui
     logger.info('Depósito criado (manual)', { userId: req.user.id, txId: tx.id, amount });
     res.status(201).json({ ...tx, pix_code: null, qr_code_image: null });
   } catch (err) {

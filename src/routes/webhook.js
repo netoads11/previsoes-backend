@@ -76,6 +76,29 @@ router.post('/', express.raw({ type: '*/*' }), async (req, res) => {
             'UPDATE wallets SET balance = balance + $1 WHERE user_id = $2',
             [txAmount, user_id]
           );
+
+          // Bônus de depósito + rollover
+          const cfgQ = await client.query("SELECT key, value FROM settings WHERE key IN ('bonus_enabled','bonus_percentage','bonus_max','bonus_rollover')");
+          const s = {}; cfgQ.rows.forEach(r => s[r.key] = r.value);
+          if (s['bonus_enabled'] === 'true') {
+            const pct  = Number(s['bonus_percentage'] || 0) / 100;
+            const max  = Number(s['bonus_max'] || 0);
+            const mult = Number(s['bonus_rollover'] || 1);
+            let bonus  = Number(txAmount) * pct;
+            if (max > 0 && bonus > max) bonus = max;
+            if (bonus > 0) {
+              await client.query(
+                `INSERT INTO wallets (user_id, balance_bonus, rollover_required, rollover_done)
+                 VALUES ($1, $2, $3, 0)
+                 ON CONFLICT (user_id) DO UPDATE SET
+                   balance_bonus     = COALESCE(wallets.balance_bonus, 0) + $2,
+                   rollover_required = COALESCE(wallets.rollover_required, 0) + $3`,
+                [user_id, bonus, Number((bonus * mult).toFixed(2))]
+              );
+              logger.info('Bônus aplicado via webhook', { user_id, bonus, rollover: bonus * mult });
+            }
+          }
+
           await client.query('COMMIT');
           logger.info('Depósito creditado', { user_id, amount: txAmount, external_id });
         } catch (e) {
