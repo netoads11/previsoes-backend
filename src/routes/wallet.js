@@ -29,16 +29,57 @@ router.get("/transactions", auth, async (req, res) => {
 });
 
 router.post("/deposit", auth, async (req, res) => {
-  const { amount, pix_key } = req.body;
+  const { amount } = req.body;
   if (!amount || amount <= 0) return res.status(400).json({ error: "Valor invalido" });
   logger.info('Solicitação de depósito', { userId: req.user.id, amount });
   try {
-    const result = await pool.query(
-      "INSERT INTO transactions (user_id, type, amount, status, pix_key) VALUES ($1, $2, $3, $4, $5) RETURNING *",
-      [req.user.id, "deposit", amount, "pending", pix_key || null]
+    // Cria transação pendente primeiro (ID vira external_id na Simplify)
+    const txResult = await pool.query(
+      "INSERT INTO transactions (user_id, type, amount, status) VALUES ($1, $2, $3, $4) RETURNING *",
+      [req.user.id, "deposit", amount, "pending"]
     );
-    logger.info('Depósito criado', { userId: req.user.id, txId: result.rows[0].id, amount });
-    res.status(201).json(result.rows[0]);
+    const tx = txResult.rows[0];
+
+    // Tenta gerar cobrança PIX real via Simplify
+    try {
+      const simplify = require('../services/simplify.service');
+      const creds = await simplify.getCredentials();
+
+      if (creds.simplify_active === 'true' && creds.simplify_client_id) {
+        const userRow = await pool.query('SELECT name, email FROM users WHERE id=$1', [req.user.id]);
+        const u = userRow.rows[0] || {};
+
+        const pixData = await simplify.createPixCharge({
+          amount: Number(amount),
+          externalId: tx.id,
+          customerName: u.name || 'Cliente',
+          customerDocument: '',
+          customerEmail: u.email || '',
+        });
+
+        // Mapeia campos da resposta Simplify (podem variar: qrCode, qr_code, emv, etc.)
+        const qrCode      = pixData.qrCode      || pixData.qr_code      || pixData.emv        || pixData.payload || null;
+        const qrCodeImage = pixData.qrCodeImage  || pixData.qr_code_image || pixData.imageQrCode || null;
+        const expiresAt   = pixData.expiresAt    || pixData.expires_at   || null;
+        const gatewayId   = pixData.id           || pixData.deposit_id   || null;
+
+        await pool.query(
+          `UPDATE transactions SET qr_code=$1, qr_code_image=$2, expires_at=$3, external_id=$4
+           WHERE id=$5`,
+          [qrCode, qrCodeImage, expiresAt, gatewayId || tx.id, tx.id]
+        );
+
+        logger.info('Cobrança PIX gerada', { txId: tx.id, gatewayId, amount });
+        return res.status(201).json({ ...tx, pix_code: qrCode, qr_code_image: qrCodeImage, expires_at: expiresAt });
+      }
+    } catch (gwErr) {
+      // Gateway falhou — retorna transação manual (admin aprova manualmente)
+      logger.warn('Simplify indisponível, depósito manual', { txId: tx.id, error: gwErr.message });
+    }
+
+    // Fallback: sem gateway ativo — transação pendente para aprovação manual
+    logger.info('Depósito criado (manual)', { userId: req.user.id, txId: tx.id, amount });
+    res.status(201).json({ ...tx, pix_code: null, qr_code_image: null });
   } catch (err) {
     logger.error('Erro ao criar depósito', { userId: req.user.id, amount, error: err.message, stack: err.stack });
     res.status(500).json({ error: "Erro interno" });

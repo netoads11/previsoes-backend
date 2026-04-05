@@ -53,8 +53,8 @@ router.post('/', express.raw({ type: '*/*' }), async (req, res) => {
           }
           const { user_id, amount: txAmount } = tx.rows[0];
           await client.query(
-            "UPDATE transactions SET status = 'completed', gateway_ref = $1 WHERE id = $2",
-            [data.id || data.deposit_id || null, external_id]
+            "UPDATE transactions SET status = 'completed', paid_at = NOW() WHERE id = $1",
+            [external_id]
           );
           await client.query(
             'UPDATE wallets SET balance = balance + $1 WHERE user_id = $2',
@@ -84,8 +84,8 @@ router.post('/', express.raw({ type: '*/*' }), async (req, res) => {
       case 'withdrawal.paid': {
         const { external_id } = data;
         await pool.query(
-          "UPDATE transactions SET status = 'completed', gateway_ref = $1 WHERE id = $2 AND type = 'withdrawal'",
-          [data.id || data.withdraw_id || null, external_id]
+          "UPDATE transactions SET status = 'completed', paid_at = NOW() WHERE id = $1 AND type = 'withdrawal'",
+          [external_id]
         );
         logger.info('Saque confirmado', { external_id });
         break;
